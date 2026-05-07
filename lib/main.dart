@@ -15,6 +15,7 @@ const _muted = Color(0xFFA0725A);
 const _orange = Color(0xFFFF9F66);
 const _peach = Color(0xFFFFB88A);
 const _softPeach = Color(0xFFFFD4A8);
+const _danger = Color(0xFFD32F2F);
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
@@ -52,6 +53,7 @@ class _HealthTrackerAppState extends State<HealthTrackerApp> {
       const FoodWaterTab(),
       const OverviewTab(),
       const SleepTab(),
+      const LogTab(),
     ];
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
@@ -163,6 +165,7 @@ class BottomNav extends StatelessWidget {
       (Icons.apple, 'Food'),
       (Icons.bar_chart_rounded, 'Overview'),
       (Icons.nightlight_round, 'Sleep'),
+      (Icons.calendar_month, 'Log'),
     ];
 
     return Container(
@@ -319,6 +322,7 @@ class PixelBar extends StatelessWidget {
     required this.value,
     required this.max,
     this.target,
+    this.limit,
     this.unit = '',
     this.color = _orange,
     this.icon,
@@ -328,6 +332,7 @@ class PixelBar extends StatelessWidget {
   final double value;
   final double max;
   final double? target;
+  final double? limit;
   final String unit;
   final Color color;
   final IconData? icon;
@@ -340,63 +345,37 @@ class PixelBar extends StatelessWidget {
     final targetText = target == null ? '' : ' / ${unit == 'L' ? target!.toStringAsFixed(1) : target!.round()}$unit';
 
     return Padding(
-      padding: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.only(bottom: 26),
       child: Column(
         children: [
           Row(
             children: [
               if (icon != null) ...[
                 Container(
-                  padding: const EdgeInsets.all(8),
+                  width: 54,
+                  height: 54,
+                  alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: _peach.withValues(alpha: .25),
+                    color: _paper.withValues(alpha: .28),
                     border: Border.all(color: _border, width: 2),
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(14),
                   ),
-                  child: Icon(icon, color: color, size: 18),
+                  child: Icon(icon, color: color, size: 24),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 18),
               ],
               Expanded(child: Text(label, style: monument(size: 11, color: _brown))),
               Text('$valueText$unit$targetText', style: monument(size: 10, color: _muted)),
             ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
           LayoutBuilder(
             builder: (context, constraints) {
-              return Container(
-                height: 14,
-                clipBehavior: Clip.none,
-                decoration: BoxDecoration(
-                  color: _peach.withValues(alpha: .20),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: _border, width: 2),
-                ),
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    FractionallySizedBox(
-                      widthFactor: percent,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(colors: [color, color == _softPeach ? const Color(0xFFFFCAA0) : _peach]),
-                          borderRadius: BorderRadius.circular(8),
-                          boxShadow: [BoxShadow(color: _orange.withValues(alpha: .30), blurRadius: 8)],
-                        ),
-                      ),
-                    ),
-                    if (targetPercent != null)
-                      Positioned(
-                        left: constraints.maxWidth * targetPercent - 1,
-                        top: -4,
-                        bottom: -2,
-                        child: Container(
-                          width: 2,
-                          decoration: BoxDecoration(color: _border, boxShadow: [BoxShadow(color: _border.withValues(alpha: .5), blurRadius: 6)]),
-                        ),
-                      ),
-                  ],
-                ),
+              return UniformProgressTrack(
+                progress: percent,
+                color: color,
+                targetPercent: targetPercent,
+                width: constraints.maxWidth,
               );
             },
           ),
@@ -418,22 +397,25 @@ class _WorkoutPlusTabState extends State<WorkoutPlusTab> {
   double energy = 75;
   bool scanned = false;
   _Exercise? selectedExercise;
+  bool showExerciseSelection = false;
+  bool viewingTodayWorkouts = false;
   String trackingMode = 'energy';
   int energyRating = 3;
   List<_WorkoutSet> sets = const [_WorkoutSet()];
+  List<_LoggedWorkout> todayWorkouts = const [];
 
   static const exercises = [
-    _Exercise('Bench Press', 185, 225, 82, Icons.fitness_center, 'lbs'),
-    _Exercise('Squats', 225, 275, 82, Icons.trending_up, 'lbs'),
-    _Exercise('Deadlift', 275, 315, 87, Icons.track_changes, 'lbs'),
+    _Exercise('Bench Press', 84, 102, 82, Icons.fitness_center, 'kg'),
+    _Exercise('Squats', 102, 125, 82, Icons.trending_up, 'kg'),
+    _Exercise('Deadlift', 125, 143, 87, Icons.track_changes, 'kg'),
     _Exercise('Pull-ups', 12, 20, 60, Icons.emoji_events, 'reps'),
-    _Exercise('Running', 3.5, 5, 70, Icons.directions_run, 'miles'),
+    _Exercise('Running', 3.5, 5, 70, Icons.directions_run, 'km'),
   ];
 
   static const history = {
-    'Bench Press': [135.0, 145.0, 155.0, 165.0, 175.0, 185.0],
-    'Squats': [165.0, 180.0, 195.0, 205.0, 215.0, 225.0],
-    'Deadlift': [205.0, 225.0, 240.0, 255.0, 265.0, 275.0],
+    'Bench Press': [61.0, 66.0, 70.0, 75.0, 79.0, 84.0],
+    'Squats': [75.0, 82.0, 88.0, 93.0, 98.0, 102.0],
+    'Deadlift': [93.0, 102.0, 109.0, 116.0, 120.0, 125.0],
     'Pull-ups': [5.0, 7.0, 8.0, 10.0, 11.0, 12.0],
     'Running': [2.0, 2.3, 2.7, 3.0, 3.2, 3.5],
   };
@@ -461,17 +443,24 @@ class _WorkoutPlusTabState extends State<WorkoutPlusTab> {
             MonumentCard(
               child: Column(
                 children: [
-                  Text('Exercise Progress', style: monument(size: 12, color: _brown)),
+                  Text('Workout Today', style: monument(size: 12, color: _brown)),
                   const SizedBox(height: 18),
-                  for (final item in exercises)
+                  if (todayWorkouts.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      child: Text('No workouts logged yet', style: monument(size: 10, color: _muted)),
+                    )
+                  else
                     ExerciseRow(
-                      name: item.name,
-                      current: item.current,
-                      goal: item.goal,
-                      progress: item.progress / 100,
-                      icon: item.icon,
-                      onTap: () => setState(() => selectedExercise = item),
+                      name: '${todayWorkouts.length} ${todayWorkouts.length == 1 ? 'Exercise' : 'Exercises'}',
+                      current: 'View',
+                      goal: 'Details',
+                      progress: math.min(1, todayWorkouts.length / 5),
+                      icon: Icons.fitness_center,
+                      onTap: () => setState(() => viewingTodayWorkouts = true),
                     ),
+                  const SizedBox(height: 4),
+                  ModeButtonWide(label: '+ ADD EXERCISE', active: false, onTap: () => setState(() => showExerciseSelection = true)),
                 ],
               ),
             ),
@@ -496,8 +485,34 @@ class _WorkoutPlusTabState extends State<WorkoutPlusTab> {
               sets = next;
             }),
             onLog: () => setState(() {
+              final now = TimeOfDay.now();
+              todayWorkouts = [
+                ...todayWorkouts,
+                _LoggedWorkout(
+                  exercise: selectedExercise!.name,
+                  type: trackingMode,
+                  energyRating: trackingMode == 'energy' ? energyRating : null,
+                  sets: trackingMode == 'weights' ? sets : null,
+                  time: now.format(context),
+                  unit: selectedExercise!.unit,
+                ),
+              ];
               workout = math.min(100, workout + 5);
               _closeModal();
+            }),
+          ),
+        if (viewingTodayWorkouts)
+          _TodayWorkoutsModal(
+            workouts: todayWorkouts,
+            onClose: () => setState(() => viewingTodayWorkouts = false),
+          ),
+        if (showExerciseSelection)
+          _ExerciseSelectionModal(
+            exercises: exercises,
+            onClose: () => setState(() => showExerciseSelection = false),
+            onSelect: (exercise) => setState(() {
+              selectedExercise = exercise;
+              showExerciseSelection = false;
             }),
           ),
       ],
@@ -528,6 +543,24 @@ class _WorkoutSet {
 
   final int reps;
   final double weight;
+}
+
+class _LoggedWorkout {
+  const _LoggedWorkout({
+    required this.exercise,
+    required this.type,
+    required this.time,
+    required this.unit,
+    this.energyRating,
+    this.sets,
+  });
+
+  final String exercise;
+  final String type;
+  final String time;
+  final String unit;
+  final int? energyRating;
+  final List<_WorkoutSet>? sets;
 }
 
 class _WorkoutModal extends StatelessWidget {
@@ -816,6 +849,173 @@ class _PrimaryLogButton extends StatelessWidget {
   }
 }
 
+class _TodayWorkoutsModal extends StatelessWidget {
+  const _TodayWorkoutsModal({required this.workouts, required this.onClose});
+
+  final List<_LoggedWorkout> workouts;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return BasicOverlay(
+      onClose: onClose,
+      child: MonumentCard(
+        margin: EdgeInsets.zero,
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ModalHeader(title: "Today's Workouts", onClose: onClose),
+            const SizedBox(height: 14),
+            for (final workout in workouts)
+              MonumentCard(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Expanded(child: Text(workout.exercise, style: monument(size: 11, color: _brown))),
+                      Text(workout.time, style: monument(size: 9, color: _muted)),
+                    ]),
+                    const SizedBox(height: 8),
+                    if (workout.type == 'energy')
+                      Text('Energy: ${workout.energyRating}/5', style: monument(size: 10, color: _border))
+                    else
+                      for (var i = 0; i < (workout.sets ?? const <_WorkoutSet>[]).length; i++)
+                        Text('Set ${i + 1}: ${workout.sets![i].reps} reps x ${_formatNumber(workout.sets![i].weight)} ${workout.unit}', style: monument(size: 10, color: _border)),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ExerciseSelectionModal extends StatelessWidget {
+  const _ExerciseSelectionModal({required this.exercises, required this.onSelect, required this.onClose});
+
+  final List<_Exercise> exercises;
+  final ValueChanged<_Exercise> onSelect;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return BasicOverlay(
+      onClose: onClose,
+      child: MonumentCard(
+        margin: EdgeInsets.zero,
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ModalHeader(title: 'Select Exercise', onClose: onClose),
+            const SizedBox(height: 14),
+            for (final exercise in exercises)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: () => onSelect(exercise),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: _paper.withValues(alpha: .95),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: _border, width: 2),
+                      boxShadow: [BoxShadow(color: _border.withValues(alpha: .25), offset: const Offset(0, 4))],
+                    ),
+                    child: Row(children: [
+                      Icon(exercise.icon, color: _orange, size: 18),
+                      const SizedBox(width: 12),
+                      Text(exercise.name, style: monument(size: 11, color: _brown)),
+                    ]),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class BasicOverlay extends StatelessWidget {
+  const BasicOverlay({super.key, required this.child, required this.onClose});
+
+  final Widget child;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned.fill(
+      child: GestureDetector(
+        onTap: onClose,
+        child: Container(
+          color: _brown.withValues(alpha: .70),
+          padding: const EdgeInsets.all(18),
+          child: Center(
+            child: GestureDetector(
+              onTap: () {},
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 430, maxHeight: 650),
+                child: SingleChildScrollView(child: child),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ModalHeader extends StatelessWidget {
+  const ModalHeader({super.key, required this.title, required this.onClose});
+
+  final String title;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(children: [
+      Expanded(child: Text(title, style: monument(size: 13, color: _brown))),
+      SmallActionButton(icon: Icons.close, onTap: onClose),
+    ]);
+  }
+}
+
+class ModeButtonWide extends StatelessWidget {
+  const ModeButtonWide({super.key, required this.label, required this.active, required this.onTap});
+
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: onTap,
+      child: Container(
+        height: 42,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: active ? null : _paper.withValues(alpha: .95),
+          gradient: active ? const LinearGradient(colors: [_orange, _peach]) : null,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: _border, width: 2),
+          boxShadow: [BoxShadow(color: _border.withValues(alpha: .25), offset: const Offset(0, 4))],
+        ),
+        child: Text(label, style: monument(size: 10, color: active ? _brown : _border)),
+      ),
+    );
+  }
+}
+
 class FoodWaterTab extends StatefulWidget {
   const FoodWaterTab({super.key});
 
@@ -824,9 +1024,10 @@ class FoodWaterTab extends StatefulWidget {
 }
 
 class _FoodWaterTabState extends State<FoodWaterTab> {
-  double water = 2.5;
-  double calories = 1850;
-  double protein = 120;
+  double water = 0;
+  double calories = 0;
+  double protein = 0;
+  double sugar = 0;
   bool scanned = false;
 
   @override
@@ -838,47 +1039,65 @@ class _FoodWaterTabState extends State<FoodWaterTab> {
           icon: Icons.photo_camera_outlined,
           badge: 'SCAN',
           onTap: () => setState(() {
-            water = math.min(5, water + .3);
-            calories = math.min(2500, calories + 350);
-            protein = math.min(255, protein + 25);
+            water = math.min(6, water + 1);
+            calories = math.min(4000, calories + 300);
+            protein = math.min(300, protein + 30);
+            sugar = math.min(100, sugar + 10);
             scanned = true;
           }),
         ),
         const SizedBox(height: 24),
-        if (scanned) const ScanCard(title: 'AI Scan Results', lines: ['+350 CALORIES', '+25g PROTEIN', '+0.3L WATER']),
+        if (scanned) const ScanCard(title: 'AI Scan Results', lines: ['+300 CALORIES', '+30g PROTEIN', '+1L WATER', '+10g SUGAR']),
         MetricCard(
           title: 'Water Intake',
           icon: Icons.water_drop,
-          label: 'Liters (0-5L)',
+          label: 'Liters (0-6L)',
           value: water,
-          max: 5,
+          max: 6,
           target: 3,
           unit: 'L',
-          color: _orange,
-          onChanged: (v) => setState(() => water = v.clamp(0, 5)),
+          limit: 4,
+          color: water > 4 ? _danger : _orange,
+          step: 1,
+          onChanged: (v) => setState(() => water = v.clamp(0, 6)),
         ),
         MetricCard(
           title: 'Calories',
           icon: Icons.local_fire_department,
-          label: 'Calories (0-2500)',
+          label: 'Calories (0-4000)',
           value: calories,
-          max: 2500,
-          target: 2000,
-          color: _peach,
-          step: 50,
-          onChanged: (v) => setState(() => calories = v.clamp(0, 2500)),
+          max: 4000,
+          target: 2500,
+          limit: 3500,
+          color: calories > 3500 ? _danger : _peach,
+          step: 100,
+          onChanged: (v) => setState(() => calories = v.clamp(0, 4000)),
         ),
         MetricCard(
           title: 'Protein',
           icon: Icons.restaurant,
-          label: 'Grams (0-255g)',
+          label: 'Grams (0-300g)',
           value: protein,
-          max: 255,
+          max: 300,
           target: 170,
+          limit: 250,
           unit: 'g',
-          color: _softPeach,
+          color: protein > 250 ? _danger : _softPeach,
+          step: 10,
+          onChanged: (v) => setState(() => protein = v.clamp(0, 300)),
+        ),
+        MetricCard(
+          title: 'Sugar',
+          icon: Icons.cookie,
+          label: 'Grams (0-100g)',
+          value: sugar,
+          max: 100,
+          target: 30,
+          limit: 30,
+          unit: 'g',
+          color: sugar > 30 ? _danger : const Color(0xFFFFCAA0),
           step: 5,
-          onChanged: (v) => setState(() => protein = v.clamp(0, 255)),
+          onChanged: (v) => setState(() => sugar = v.clamp(0, 100)),
         ),
       ],
     );
@@ -893,14 +1112,24 @@ class OverviewTab extends StatefulWidget {
 }
 
 class _OverviewTabState extends State<OverviewTab> {
-  int streak = 7;
+  int streak = 0;
+  String? selectedCategory;
+
+  static const categories = [
+    _ExerciseCategory('Cardio', 'Running', 4, 5, 80, Icons.directions_run, ['Running', 'Jogging', 'Cycling', 'Swimming', 'Rowing', 'Jump Rope', 'Walking', 'Hiking']),
+    _ExerciseCategory('Upper Body', 'Bench Press', 84, 102, 82, Icons.fitness_center, ['Bench Press', 'Incline Bench Press', 'Dumbbell Press', 'Push-ups', 'Pull-ups', 'Rows', 'Shoulder Press', 'Bicep Curls']),
+    _ExerciseCategory('Lower Body', 'Squats', 102, 125, 82, Icons.trending_up, ['Squats', 'Front Squats', 'Leg Press', 'Lunges', 'Deadlift', 'Hip Thrusts', 'Calf Raises', 'Box Jumps']),
+    _ExerciseCategory('Sprinting', 'Sprint Intervals', 12, 20, 60, Icons.track_changes, ['Sprint Intervals', '100m Sprints', 'Hill Sprints', 'Shuttle Runs', 'Tempo Runs', 'Sled Push', 'Track Sprints']),
+  ];
 
   @override
   Widget build(BuildContext context) {
-    return PageShell(
-      title: 'Overview',
+    return Stack(
       children: [
-        Row(
+        PageShell(
+          title: 'Overview',
+          children: [
+            Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             SmallActionButton(icon: Icons.remove, onTap: () => setState(() => streak = math.max(0, streak - 1))),
@@ -933,24 +1162,120 @@ class _OverviewTabState extends State<OverviewTab> {
                   border: Border.all(color: _border, width: 3),
                   boxShadow: [BoxShadow(color: _border.withValues(alpha: .25), offset: const Offset(0, 4))],
                 ),
-                child: const Icon(Icons.auto_fix_high, size: 70, color: _brown),
+                child: const CustomPaint(painter: CatCompanionPainter(), child: SizedBox.expand()),
               ),
               Positioned(
                 bottom: -18,
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
                   decoration: BoxDecoration(color: _paper.withValues(alpha: .92), borderRadius: BorderRadius.circular(12), border: Border.all(color: _border, width: 2)),
-                  child: Text('HERO', style: monument(size: 10, color: _brown)),
+                  child: Text('COMPANION', style: monument(size: 10, color: _brown)),
                 ),
               ),
             ],
           ),
         ),
         const SizedBox(height: 44),
-        MonumentCard(margin: EdgeInsets.zero, child: ChartBlock(title: 'Stats', chart: RadarPainter(labels: const ['FOOD', 'WATER', 'SLEEP', 'WORKOUT', 'ENERGY'], values: const [65, 80, 70, 55, 75]))),
+            MonumentCard(child: ChartBlock(title: 'Stats', chart: RadarPainter(labels: const ['FOOD', 'WATER', 'SLEEP', 'WORKOUT', 'ENERGY'], values: const [65, 80, 70, 55, 75]))),
+            MonumentCard(
+              margin: EdgeInsets.zero,
+              child: Column(
+                children: [
+                  Text('Exercise Progress', style: monument(size: 12, color: _brown)),
+                  const SizedBox(height: 18),
+                  for (final item in categories)
+                    ExerciseRow(
+                      name: item.exercise,
+                      current: item.current,
+                      goal: item.goal,
+                      progress: item.progress / 100,
+                      icon: item.icon,
+                      onTap: () => setState(() => selectedCategory = item.category),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        if (selectedCategory != null)
+          _ExerciseCategoryModal(
+            category: categories.firstWhere((item) => item.category == selectedCategory),
+            onClose: () => setState(() => selectedCategory = null),
+          ),
       ],
     );
   }
+}
+
+class _ExerciseCategory {
+  const _ExerciseCategory(this.category, this.exercise, this.current, this.goal, this.progress, this.icon, this.exercises);
+
+  final String category;
+  final String exercise;
+  final Object current;
+  final Object goal;
+  final double progress;
+  final IconData icon;
+  final List<String> exercises;
+}
+
+class _ExerciseCategoryModal extends StatelessWidget {
+  const _ExerciseCategoryModal({required this.category, required this.onClose});
+
+  final _ExerciseCategory category;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return BasicOverlay(
+      onClose: onClose,
+      child: MonumentCard(
+        margin: EdgeInsets.zero,
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ModalHeader(title: '${category.category} Exercises', onClose: onClose),
+            const SizedBox(height: 14),
+            for (final exercise in category.exercises)
+              MonumentCard(
+                margin: const EdgeInsets.only(bottom: 10),
+                padding: const EdgeInsets.all(14),
+                child: Text(exercise, style: monument(size: 11, color: _border)),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class CatCompanionPainter extends CustomPainter {
+  const CatCompanionPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = math.min(size.width, size.height);
+    final c = Offset(size.width / 2, size.height / 2);
+    final border = Paint()..color = _border..style = PaintingStyle.stroke..strokeWidth = 3;
+    final fill = Paint()..color = const Color(0xFFFFCFA3);
+    final ear = Paint()..color = _peach;
+    canvas.drawPath(Path()..moveTo(c.dx - s * .23, c.dy - s * .14)..lineTo(c.dx - s * .36, c.dy - s * .36)..lineTo(c.dx - s * .10, c.dy - s * .23)..close(), ear);
+    canvas.drawPath(Path()..moveTo(c.dx + s * .23, c.dy - s * .14)..lineTo(c.dx + s * .36, c.dy - s * .36)..lineTo(c.dx + s * .10, c.dy - s * .23)..close(), ear);
+    canvas.drawOval(Rect.fromCenter(center: c, width: s * .58, height: s * .62), fill);
+    canvas.drawOval(Rect.fromCenter(center: c, width: s * .58, height: s * .62), border);
+    final eye = Paint()..color = _brown;
+    canvas.drawOval(Rect.fromCenter(center: c + Offset(-s * .10, -s * .02), width: s * .05, height: s * .08), eye);
+    canvas.drawOval(Rect.fromCenter(center: c + Offset(s * .10, -s * .02), width: s * .05, height: s * .08), eye);
+    canvas.drawCircle(c + Offset(0, s * .06), s * .035, Paint()..color = _orange);
+    final mouth = Paint()..color = _border..style = PaintingStyle.stroke..strokeWidth = 2..strokeCap = StrokeCap.round;
+    canvas.drawArc(Rect.fromCenter(center: c + Offset(-s * .04, s * .10), width: s * .10, height: s * .08), 0, math.pi * .8, false, mouth);
+    canvas.drawArc(Rect.fromCenter(center: c + Offset(s * .04, s * .10), width: s * .10, height: s * .08), math.pi * .2, math.pi * .8, false, mouth);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class SleepTab extends StatefulWidget {
@@ -960,10 +1285,186 @@ class SleepTab extends StatefulWidget {
   State<SleepTab> createState() => _SleepTabState();
 }
 
+class LogTab extends StatefulWidget {
+  const LogTab({super.key});
+
+  @override
+  State<LogTab> createState() => _LogTabState();
+}
+
+class _LogTabState extends State<LogTab> {
+  bool summary = false;
+  String category = 'WORKOUTS';
+  String period = 'DAILY';
+  int? selectedDay;
+
+  static const categoryIcons = {
+    'WORKOUTS': Icons.fitness_center,
+    'HYDRATION': Icons.water_drop,
+    'SLEEP': Icons.nightlight_round,
+    'ENERGY': Icons.bolt,
+  };
+
+  static const insights = {
+    'WORKOUTS': ['Completed 3 planned exercises today', 'Morning workout showed the best energy', 'Bench press increased from last week'],
+    'HYDRATION': ['Consumed 3.2L out of a 3.5L target', 'Peak intake times were 10 AM and 2 PM', 'Hydration helped workout performance'],
+    'SLEEP': ['7.5 hours of sleep logged', 'Deep sleep quality is trending upward', 'Bedtime consistency improved this week'],
+    'ENERGY': ['Energy peaked around 11 AM', 'Post-workout boost lasted 3 hours', 'Afternoon energy improved with hydration'],
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final monthName = _monthName(now.month);
+    return Stack(
+      children: [
+        PageShell(
+          title: 'Activity Log',
+          children: [
+            Row(children: [
+              Expanded(child: ModeButtonWide(label: 'DAILY LOG', active: !summary, onTap: () => setState(() => summary = false))),
+              const SizedBox(width: 10),
+              Expanded(child: ModeButtonWide(label: 'SUMMARY', active: summary, onTap: () => setState(() => summary = true))),
+            ]),
+            const SizedBox(height: 18),
+            if (!summary) ...[
+              MonumentCard(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    SmallActionButton(icon: Icons.chevron_left, onTap: () {}),
+                    Text('$monthName ${now.year}', style: monument(size: 12, color: _brown)),
+                    SmallActionButton(icon: Icons.chevron_right, onTap: () {}),
+                  ],
+                ),
+              ),
+              for (var day = DateTime(now.year, now.month + 1, 0).day; day >= math.max(1, DateTime(now.year, now.month + 1, 0).day - 12); day--)
+                LogDayRow(
+                  month: monthName.substring(0, 3),
+                  day: day,
+                  isToday: day == now.day,
+                  hasData: day == 15 || day == 20 || day == now.day,
+                  onTap: () => setState(() => selectedDay = day),
+                ),
+            ] else ...[
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  for (final item in categoryIcons.entries)
+                    SizedBox(
+                      width: 180,
+                      child: ModeButtonWide(label: item.key, active: category == item.key, onTap: () => setState(() => category = item.key)),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Row(children: [
+                for (final item in const ['DAILY', 'WEEKLY', 'MONTHLY']) ...[
+                  Expanded(child: ModeButtonWide(label: item, active: period == item, onTap: () => setState(() => period = item))),
+                  if (item != 'MONTHLY') const SizedBox(width: 8),
+                ],
+              ]),
+              const SizedBox(height: 18),
+              MonumentCard(
+                padding: const EdgeInsets.all(24),
+                child: Column(children: [
+                  Text('$category - $period', style: monument(size: 11, color: _border)),
+                  const SizedBox(height: 8),
+                  Text('${_summaryScore(category, period)}%', style: monument(size: 48, color: _orange, weight: FontWeight.w800)),
+                  UniformProgressTrack(progress: _summaryScore(category, period) / 100, color: _orange),
+                ]),
+              ),
+              MonumentCard(
+                margin: EdgeInsets.zero,
+                child: Column(children: [
+                  Text('AI INSIGHTS', style: monument(size: 12, color: _brown)),
+                  const SizedBox(height: 14),
+                  for (final insight in insights[category]!)
+                    MonumentCard(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.all(12),
+                      child: Text('• $insight', style: monument(size: 10, color: _border).copyWith(height: 1.45)),
+                    ),
+                ]),
+              ),
+            ],
+          ],
+        ),
+        if (selectedDay != null)
+          BasicOverlay(
+            onClose: () => setState(() => selectedDay = null),
+            child: MonumentCard(
+              margin: EdgeInsets.zero,
+              padding: const EdgeInsets.all(22),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ModalHeader(title: '$monthName $selectedDay, ${now.year}', onClose: () => setState(() => selectedDay = null)),
+                  const SizedBox(height: 14),
+                  Text('WORKOUTS', style: monument(size: 11, color: _brown)),
+                  const SizedBox(height: 10),
+                  Text('Bench Press: 10 reps x 84 kg\nSquats: 12 reps x 102 kg', style: monument(size: 10, color: _border).copyWith(height: 1.6)),
+                  const SizedBox(height: 14),
+                  Text('Sleep 7.5h  •  Energy 8/10\nWater 2.8L  •  Calories 2100', style: monument(size: 10, color: _muted).copyWith(height: 1.6)),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  int _summaryScore(String category, String period) {
+    final base = {'WORKOUTS': 85, 'HYDRATION': 92, 'SLEEP': 87, 'ENERGY': 79}[category]!;
+    return period == 'DAILY' ? base : period == 'WEEKLY' ? base - 5 : base - 8;
+  }
+
+  String _monthName(int month) {
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    return months[month - 1];
+  }
+}
+
+class LogDayRow extends StatelessWidget {
+  const LogDayRow({super.key, required this.month, required this.day, required this.isToday, required this.hasData, required this.onTap});
+
+  final String month;
+  final int day;
+  final bool isToday;
+  final bool hasData;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return MonumentCard(
+      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.only(bottom: 12),
+      child: InkWell(
+        onTap: hasData ? onTap : null,
+        child: Row(children: [
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('$month $day', style: monument(size: 14, color: _brown)),
+              Text(isToday ? 'Today' : 'Activity day', style: monument(size: 9, color: _muted)),
+            ]),
+          ),
+          if (hasData)
+            Text(isToday ? 'TODAY' : '2 WORKOUTS', style: monument(size: 9, color: _border))
+          else
+            Text('No activity', style: monument(size: 9, color: _muted)),
+        ]),
+      ),
+    );
+  }
+}
+
 class _SleepTabState extends State<SleepTab> {
-  double hours = 7;
-  double minutes = 30;
-  double energy = 7;
+  double hours = 0;
+  double minutes = 0;
+  double energy = 0;
 
   @override
   Widget build(BuildContext context) {
@@ -980,7 +1481,7 @@ class _SleepTabState extends State<SleepTab> {
                 children: [
                   Expanded(child: NumberField(label: 'Hours', value: hours, min: 0, max: 10, onChanged: (v) => setState(() => hours = v.clamp(0, 10)))),
                   const SizedBox(width: 12),
-                  Expanded(child: NumberField(label: 'Minutes', value: minutes, min: 0, max: 59, onChanged: (v) => setState(() => minutes = v.clamp(0, 59)))),
+                  Expanded(child: NumberField(label: 'Minutes', value: minutes, min: 0, max: 59, step: 15, onChanged: (v) => setState(() => minutes = v.clamp(0, 59)))),
                 ],
               ),
               const SizedBox(height: 18),
@@ -991,11 +1492,11 @@ class _SleepTabState extends State<SleepTab> {
         MetricCard(
           title: 'Energy Level',
           icon: Icons.bolt,
-          label: 'Rate 1-10',
+          label: 'Rate 0-10',
           value: energy,
           max: 10,
           color: _peach,
-          onChanged: (v) => setState(() => energy = v.clamp(1, 10)),
+          onChanged: (v) => setState(() => energy = v.clamp(0, 10)),
         ),
         MonumentCard(margin: EdgeInsets.zero, child: ChartBlock(title: 'Weekly Overview', chart: BarChartPainter(values: const [65, 72, 68, 75, 70, 80, 78], secondaryValues: const [70, 68, 75, 80, 75, 85, 72], max: 100, colors: const [_orange, _peach]))),
       ],
@@ -1014,6 +1515,7 @@ class MetricCard extends StatelessWidget {
     required this.color,
     required this.onChanged,
     this.target,
+    this.limit,
     this.unit = '',
     this.step = 1,
   });
@@ -1026,6 +1528,7 @@ class MetricCard extends StatelessWidget {
   final Color color;
   final ValueChanged<double> onChanged;
   final double? target;
+  final double? limit;
   final String unit;
   final double step;
 
@@ -1039,8 +1542,32 @@ class MetricCard extends StatelessWidget {
           NumberField(label: label, value: value, min: 0, max: max, step: step, onChanged: onChanged),
           const SizedBox(height: 18),
           PixelBar(label: title.split(' ').first.toUpperCase(), value: value, max: max, target: target, unit: unit, color: color, icon: icon),
+          if (limit != null && value > limit!) ...[
+            const SizedBox(height: 10),
+            LimitWarning(label: '${title.split(' ').first.toUpperCase()} LIMIT EXCEEDED'),
+          ],
         ],
       ),
+    );
+  }
+}
+
+class LimitWarning extends StatelessWidget {
+  const LimitWarning({super.key, required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: _danger.withValues(alpha: .10),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _danger.withValues(alpha: .35), width: 2),
+      ),
+      child: Text(label, textAlign: TextAlign.center, style: monument(size: 9, color: _danger)),
     );
   }
 }
@@ -1138,8 +1665,8 @@ class ExerciseRow extends StatelessWidget {
   });
 
   final String name;
-  final num current;
-  final num goal;
+  final Object current;
+  final Object goal;
   final double progress;
   final IconData icon;
   final VoidCallback? onTap;
@@ -1147,26 +1674,28 @@ class ExerciseRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(14),
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.only(bottom: 18),
+        padding: const EdgeInsets.only(bottom: 22),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(color: _orange.withValues(alpha: .16), border: Border.all(color: _border, width: 2), borderRadius: BorderRadius.circular(10)),
-              child: Icon(icon, color: _orange, size: 18),
+              width: 54,
+              height: 54,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(color: _paper.withValues(alpha: .45), border: Border.all(color: _border, width: 2), borderRadius: BorderRadius.circular(14)),
+              child: Icon(icon, color: _orange, size: 24),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 18),
             Expanded(
               child: Column(children: [
                 Row(children: [
                   Expanded(child: Text(name, style: monument(size: 11, color: _border))),
                   Text('$current / $goal', style: monument(size: 10, color: _muted)),
                 ]),
-                const SizedBox(height: 8),
+                const SizedBox(height: 14),
                 PixelMiniBar(progress: progress),
               ]),
             ),
@@ -1184,13 +1713,54 @@ class PixelMiniBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return UniformProgressTrack(progress: progress, color: _orange);
+  }
+}
+
+class UniformProgressTrack extends StatelessWidget {
+  const UniformProgressTrack({
+    super.key,
+    required this.progress,
+    required this.color,
+    this.targetPercent,
+    this.width,
+  });
+
+  final double progress;
+  final Color color;
+  final double? targetPercent;
+  final double? width;
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
-      height: 14,
-      decoration: BoxDecoration(color: _orange.withValues(alpha: .15), borderRadius: BorderRadius.circular(10), border: Border.all(color: _border, width: 2)),
-      child: FractionallySizedBox(
-        alignment: Alignment.centerLeft,
-        widthFactor: progress,
-        child: Container(decoration: BoxDecoration(gradient: const LinearGradient(colors: [_orange, _peach]), borderRadius: BorderRadius.circular(8))),
+      height: 16,
+      clipBehavior: Clip.hardEdge,
+      decoration: BoxDecoration(
+        color: _paper.withValues(alpha: .32),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _border, width: 2),
+      ),
+      child: Stack(
+        children: [
+          FractionallySizedBox(
+            widthFactor: progress.clamp(0.0, 1.0),
+            child: Container(
+              margin: const EdgeInsets.all(2),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(colors: [color, color == _softPeach ? const Color(0xFFFFCAA0) : _peach]),
+                borderRadius: BorderRadius.circular(7),
+              ),
+            ),
+          ),
+          if (targetPercent != null && width != null)
+            Positioned(
+              left: width! * targetPercent!.clamp(0.0, 1.0) - 1,
+              top: 2,
+              bottom: 2,
+              child: Container(width: 2, color: _border.withValues(alpha: .30)),
+            ),
+        ],
       ),
     );
   }
@@ -1391,6 +1961,10 @@ void _label(Canvas canvas, String text, Offset offset, double size, Color color,
     textDirection: TextDirection.ltr,
   )..layout(maxWidth: 80);
   painter.paint(canvas, offset - Offset(align == TextAlign.center ? painter.width / 2 : 0, painter.height / 2));
+}
+
+String _formatNumber(num value) {
+  return value == value.roundToDouble() ? value.round().toString() : value.toStringAsFixed(1);
 }
 
 TextStyle monument({required double size, required Color color, FontWeight weight = FontWeight.w700}) {
