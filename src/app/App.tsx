@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
-import { Dumbbell, Apple, BarChart3, Moon, Calendar, Settings, Plus, Minus, X, LogOut } from 'lucide-react'
+import { Dumbbell, Apple, BarChart3, Moon, Calendar, Settings, Plus, Minus, X, LogOut, ChevronLeft } from 'lucide-react'
 import { WorkoutTab } from './components/features/workout'
+import { WorkoutMode } from './components/features/workout/WorkoutMode'
 import { FoodWaterTab } from './components/features/nutrition'
 import { OverviewTab } from './components/features/overview'
 import { SleepTab } from './components/features/sleep'
@@ -11,16 +12,15 @@ import { supabase } from '@/lib/supabase'
 
 interface TabConfig {
   name: string
-  component: React.ReactNode
   icon: typeof Dumbbell
 }
 
-const TABS: TabConfig[] = [
-  { name: 'WORKOUT',    component: <WorkoutTab />,   icon: Dumbbell  },
-  { name: 'FOOD+WATER', component: <FoodWaterTab />, icon: Apple     },
-  { name: 'OVERVIEW',  component: <OverviewTab />,   icon: BarChart3 },
-  { name: 'SLEEP+ENERGY', component: <SleepTab />,  icon: Moon      },
-  { name: 'LOG',        component: <LogTab />,       icon: Calendar  },
+const NAV_TABS: TabConfig[] = [
+  { name: 'WORKOUT',       icon: Dumbbell  },
+  { name: 'FOOD+WATER',    icon: Apple     },
+  { name: 'OVERVIEW',      icon: BarChart3 },
+  { name: 'SLEEP+ENERGY',  icon: Moon      },
+  { name: 'LOG',           icon: Calendar  },
 ]
 
 const SETTINGS_KEY = 'vg_settings_v1'
@@ -271,6 +271,8 @@ function AppShell() {
   const { user, loading, signOut } = useAuth()
   const [activeTab, setActiveTab] = useState(2)
   const [showSettings, setShowSettings] = useState(false)
+  const [workoutModeActive, setWorkoutModeActive] = useState(false)
+  const [workoutModeTab, setWorkoutModeTab] = useState<'today' | 'previous'>('today')
 
   if (loading) {
     return (
@@ -335,8 +337,8 @@ function AppShell() {
         </div>
       </div>
 
-      {/* Settings + Log buttons — only visible on LOG tab */}
-      {activeTab === 4 && (
+      {/* Settings + Log buttons — only visible on LOG tab (not in workout mode) */}
+      {!workoutModeActive && activeTab === 4 && (
         <>
           <button
             onClick={() => setShowSettings(true)}
@@ -359,11 +361,19 @@ function AppShell() {
 
       {/* Tab content */}
       <div className="flex-1 overflow-auto relative" style={{ zIndex: 1 }}>
-        {TABS.map((tab, index) => (
-          <div key={index} style={{ display: activeTab === index ? 'block' : 'none', height: '100%' }}>
-            {tab.component}
-          </div>
-        ))}
+        {workoutModeActive ? (
+          <WorkoutMode currentView={workoutModeTab} />
+        ) : (
+          <>
+            <div style={{ display: activeTab === 0 ? 'block' : 'none', height: '100%' }}>
+              <WorkoutTab onEnterWorkoutMode={() => { setWorkoutModeActive(true); setWorkoutModeTab('today') }} />
+            </div>
+            <div style={{ display: activeTab === 1 ? 'block' : 'none', height: '100%' }}><FoodWaterTab /></div>
+            <div style={{ display: activeTab === 2 ? 'block' : 'none', height: '100%' }}><OverviewTab /></div>
+            <div style={{ display: activeTab === 3 ? 'block' : 'none', height: '100%' }}><SleepTab /></div>
+            <div style={{ display: activeTab === 4 ? 'block' : 'none', height: '100%' }}><LogTab /></div>
+          </>
+        )}
       </div>
 
       {/* Bottom Navigation */}
@@ -371,36 +381,91 @@ function AppShell() {
         className="flex justify-around items-center py-3 px-2 relative"
         style={{ background: 'rgba(255,245,230,0.95)', borderTop: '2px solid rgba(139,90,62,0.2)', backdropFilter: 'blur(10px)', zIndex: 10 }}
       >
-        {TABS.map((tab, index) => {
-          const Icon = tab.icon
-          const isActive = activeTab === index
-          return (
+        {workoutModeActive ? (
+          /* ── Workout mode nav: back + Today + Previous ── */
+          <>
+            {/* Back button */}
             <button
-              key={index}
-              onClick={() => setActiveTab(index)}
-              className="monument-button transition-all flex flex-col items-center gap-1"
+              onClick={() => setWorkoutModeActive(false)}
+              className="monument-button flex flex-col items-center gap-1"
               style={{ background: 'transparent', border: 'none', padding: '4px' }}
-              aria-label={tab.name}
-              aria-current={isActive ? 'page' : undefined}
+              aria-label="Back"
             >
-              <div
-                className="flex items-center justify-center transition-all"
-                style={{
-                  width: isActive ? '44px' : '32px',
-                  height: isActive ? '44px' : '32px',
-                  borderRadius: '50%',
-                  background: isActive ? 'linear-gradient(135deg,#FF9F66,#FFB88A)' : 'transparent',
-                  boxShadow: isActive ? '0 4px 16px rgba(255,159,102,0.5),0 0 24px rgba(255,184,138,0.3)' : 'none',
-                }}
-              >
-                <Icon size={isActive ? 22 : 18} color={isActive ? '#6B4423' : '#8B5A3E'} strokeWidth={2} />
+              <div className="flex items-center justify-center" style={{ width: '32px', height: '32px', borderRadius: '50%' }}>
+                <ChevronLeft size={22} color="#8B5A3E" strokeWidth={2.5} />
               </div>
-              <span className="monument-text" style={{ fontSize: '8px', fontWeight: '700', color: isActive ? '#FF9F66' : '#A0725A', letterSpacing: '0.5px' }}>
-                {tab.name.split('+')[0]}
-              </span>
+              <span className="monument-text" style={{ fontSize: '8px', fontWeight: '700', color: '#A0725A', letterSpacing: '0.5px' }}>BACK</span>
             </button>
-          )
-        })}
+
+            {/* Today tab */}
+            {(['today', 'previous'] as const).map(view => {
+              const isActive = workoutModeTab === view
+              return (
+                <button
+                  key={view}
+                  onClick={() => setWorkoutModeTab(view)}
+                  className="monument-button transition-all flex flex-col items-center gap-1"
+                  style={{ background: 'transparent', border: 'none', padding: '4px' }}
+                  aria-label={view}
+                >
+                  <div
+                    className="flex items-center justify-center transition-all"
+                    style={{
+                      width: isActive ? '44px' : '32px',
+                      height: isActive ? '44px' : '32px',
+                      borderRadius: '50%',
+                      background: isActive ? 'linear-gradient(135deg,#FF9F66,#FFB88A)' : 'transparent',
+                      boxShadow: isActive ? '0 4px 16px rgba(255,159,102,0.5),0 0 24px rgba(255,184,138,0.3)' : 'none',
+                    }}
+                  >
+                    {view === 'today'
+                      ? <Plus size={isActive ? 22 : 18} color={isActive ? '#6B4423' : '#8B5A3E'} strokeWidth={2} />
+                      : <Calendar size={isActive ? 22 : 18} color={isActive ? '#6B4423' : '#8B5A3E'} strokeWidth={2} />
+                    }
+                  </div>
+                  <span className="monument-text" style={{ fontSize: '8px', fontWeight: '700', color: isActive ? '#FF9F66' : '#A0725A', letterSpacing: '0.5px' }}>
+                    {view.toUpperCase()}
+                  </span>
+                </button>
+              )
+            })}
+
+            {/* Spacer to balance layout */}
+            <div style={{ width: '48px' }} />
+          </>
+        ) : (
+          /* ── Normal 5-tab nav ── */
+          NAV_TABS.map((tab, index) => {
+            const Icon = tab.icon
+            const isActive = activeTab === index
+            return (
+              <button
+                key={index}
+                onClick={() => setActiveTab(index)}
+                className="monument-button transition-all flex flex-col items-center gap-1"
+                style={{ background: 'transparent', border: 'none', padding: '4px' }}
+                aria-label={tab.name}
+                aria-current={isActive ? 'page' : undefined}
+              >
+                <div
+                  className="flex items-center justify-center transition-all"
+                  style={{
+                    width: isActive ? '44px' : '32px',
+                    height: isActive ? '44px' : '32px',
+                    borderRadius: '50%',
+                    background: isActive ? 'linear-gradient(135deg,#FF9F66,#FFB88A)' : 'transparent',
+                    boxShadow: isActive ? '0 4px 16px rgba(255,159,102,0.5),0 0 24px rgba(255,184,138,0.3)' : 'none',
+                  }}
+                >
+                  <Icon size={isActive ? 22 : 18} color={isActive ? '#6B4423' : '#8B5A3E'} strokeWidth={2} />
+                </div>
+                <span className="monument-text" style={{ fontSize: '8px', fontWeight: '700', color: isActive ? '#FF9F66' : '#A0725A', letterSpacing: '0.5px' }}>
+                  {tab.name.split('+')[0]}
+                </span>
+              </button>
+            )
+          })
+        )}
       </nav>
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}

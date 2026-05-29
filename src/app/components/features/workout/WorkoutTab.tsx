@@ -8,6 +8,7 @@ import { healthSnapshot } from '@/store/healthSnapshot'
 import { TODAY } from '@/lib/supabase'
 import type { DayLog } from '@/hooks/useWorkout'
 import { CARDIO_TARGET_MINUTES, CARDIO_MAX_MINUTES } from '@/constants'
+import { TRAINING_CATEGORIES } from '@/constants/trainingCategories'
 import type { ExerciseProgress, WorkoutSet, WorkoutEntry } from '@/types'
 
 interface WorkoutScan {
@@ -30,65 +31,6 @@ const DEFAULT_WORKOUT_SCAN: WorkoutScan = {
   energyRating: 3,
   unit: 'kg',
 }
-
-const TRAINING_CATEGORIES = [
-  {
-    name: 'Speed',
-    color: '#FF6B6B',
-    gradient: 'linear-gradient(135deg, #FF6B6B 0%, #FF8E8E 100%)',
-    border: '#CC4444',
-    shadow: 'rgba(255, 107, 107, 0.3)',
-    exercises: ['100m Sprint', '60m Sprint', '40 Yard Dash', 'Flying 30m', 'Resisted Sprints', 'Overspeed Sprints', 'Acceleration Runs', 'Block Starts', 'Hill Sprints', 'Sled Sprints', 'Wicket Runs', 'Sprint Drills'],
-  },
-  {
-    name: 'Speed Endurance',
-    color: '#C47AE8',
-    gradient: 'linear-gradient(135deg, #C47AE8 0%, #D49AF0 100%)',
-    border: '#9A50C8',
-    shadow: 'rgba(196, 122, 232, 0.3)',
-    exercises: ['200m Repeats', '300m Repeats', '400m Repeats', 'Shuttle Runs', 'Suicide Sprints', 'HIIT Intervals', '150m Runs', 'Hollow Sprints', 'In & Outs', 'Intensive Intervals', 'Special Endurance', 'Flying 200s'],
-  },
-  {
-    name: 'Tempo',
-    color: '#7BAFD4',
-    gradient: 'linear-gradient(135deg, #7BAFD4 0%, #9ECAE8 100%)',
-    border: '#4A88B8',
-    shadow: 'rgba(123, 175, 212, 0.3)',
-    exercises: ['Tempo Runs', 'Extensive Tempo', 'Intensive Tempo', 'Threshold Runs', 'Circuit Training', 'Aerobic Intervals', 'Recovery Runs', 'Fartlek', 'Progression Runs', 'Strides', 'Easy Runs', 'Cross Training'],
-  },
-  {
-    name: 'Push',
-    color: '#FF9F66',
-    gradient: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)',
-    border: '#CC7040',
-    shadow: 'rgba(255, 159, 102, 0.3)',
-    exercises: ['Bench Press', 'Incline Bench Press', 'Overhead Press', 'Dumbbell Press', 'Push-ups', 'Dips', 'Pike Push-ups', 'Cable Chest Fly', 'Lateral Raises', 'Front Raises', 'Tricep Extensions', 'Skull Crushers', 'Close Grip Bench', 'Arnold Press', 'Machine Press', 'Landmine Press'],
-  },
-  {
-    name: 'Pull',
-    color: '#5BB8A8',
-    gradient: 'linear-gradient(135deg, #5BB8A8 0%, #7ECEC0 100%)',
-    border: '#369080',
-    shadow: 'rgba(91, 184, 168, 0.3)',
-    exercises: ['Pull-ups', 'Chin-ups', 'Lat Pulldown', 'Barbell Row', 'Dumbbell Row', 'Cable Row', 'Face Pulls', 'Rear Delt Fly', 'Bicep Curls', 'Hammer Curls', 'Shrugs', 'T-Bar Row', 'Meadows Row', 'Inverted Row', 'Single Arm Row', 'Rack Pull'],
-  },
-  {
-    name: 'Upper',
-    color: '#D4956A',
-    gradient: 'linear-gradient(135deg, #D4956A 0%, #E8B088 100%)',
-    border: '#A86840',
-    shadow: 'rgba(212, 149, 106, 0.3)',
-    exercises: ['Bench Press', 'Pull-ups', 'Overhead Press', 'Barbell Row', 'Dips', 'Bicep Curls', 'Tricep Extensions', 'Lateral Raises', 'Face Pulls', 'Cable Crossover', 'Chest Fly', 'Upright Row', 'Arnold Press', 'Hammer Curls', 'Skull Crushers', 'Shrugs'],
-  },
-  {
-    name: 'Lower',
-    color: '#8BAF8C',
-    gradient: 'linear-gradient(135deg, #8BAF8C 0%, #A8C8A8 100%)',
-    border: '#5A8C5E',
-    shadow: 'rgba(139, 175, 140, 0.3)',
-    exercises: ['Squats', 'Deadlift', 'Romanian Deadlift', 'Leg Press', 'Bulgarian Split Squats', 'Lunges', 'Hip Thrusts', 'Glute Bridges', 'Leg Curls', 'Leg Extensions', 'Calf Raises', 'Step-ups', 'Box Jumps', 'Hack Squats', 'Sumo Deadlift', 'Good Mornings'],
-  },
-] as const
 
 const EXERCISE_GOALS: Pick<ExerciseProgress, 'exercise' | 'goal' | 'icon' | 'unit'>[] = [
   { exercise: 'Bench Press', goal: 102, icon: Dumbbell, unit: 'kg' },
@@ -128,7 +70,7 @@ const AXIS_LINE = { stroke: 'rgba(160, 114, 90, 0.2)' } as const
 const CARD_GRID = { strokeDasharray: '3 3', stroke: 'rgba(160, 114, 90, 0.2)' } as const
 const BTN_BASE = { background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '10px', border: '2px solid #8B5A3E', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)' } as const
 
-export function WorkoutTab() {
+export function WorkoutTab({ onEnterWorkoutMode }: { onEnterWorkoutMode?: () => void } = {}) {
   const {
     cardioMinutes, weeklyCardioMinutes,
     uploadedImage, selectedExercise, setSelectedExercise,
@@ -535,12 +477,33 @@ For all other messages just reply as plain text.`
 
   return (
     <div className="p-6 max-w-md mx-auto">
-      <h2
-        className="monument-text mb-6 text-center"
-        style={{ color: '#6B4423', fontSize: '20px', fontWeight: '700', textShadow: '0 2px 8px rgba(255, 184, 138, 0.3)' }}
-      >
-        Workout & Energy
-      </h2>
+      {/* Header + Enter Workout Mode */}
+      <div className="flex items-center justify-between mb-6">
+        <h2
+          className="monument-text"
+          style={{ color: '#6B4423', fontSize: '20px', fontWeight: '700', textShadow: '0 2px 8px rgba(255, 184, 138, 0.3)' }}
+        >
+          Workout & Energy
+        </h2>
+        {onEnterWorkoutMode && (
+          <button
+            onClick={onEnterWorkoutMode}
+            className="monument-button flex items-center gap-2 px-4 py-2.5"
+            style={{
+              background: 'linear-gradient(135deg,#FF9F66,#FFB88A)',
+              borderRadius: '14px',
+              border: '2px solid #8B5A3E',
+              boxShadow: '0 4px 0 rgba(139,90,62,0.25)',
+              color: '#6B4423',
+              fontSize: '12px',
+              fontWeight: '700',
+            }}
+          >
+            <span style={{ fontSize: '16px' }}>💪</span>
+            <span className="monument-text">LOG</span>
+          </button>
+        )}
+      </div>
 
       {celebration && (
         <div
