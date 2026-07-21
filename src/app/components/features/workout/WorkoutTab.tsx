@@ -238,6 +238,26 @@ Rules:
     filesInputRef.current?.click()
   }
 
+  // Camera photos can be 5–10 MB raw; Vercel's body limit is 4.5 MB.
+  const compressImage = (file: File): Promise<{ base64: string; mimeType: string }> =>
+    new Promise((resolve, reject) => {
+      const img = new Image()
+      const url = URL.createObjectURL(file)
+      img.onload = () => {
+        const MAX = 1024
+        const scale = Math.min(1, MAX / Math.max(img.width, img.height))
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.round(img.width * scale)
+        canvas.height = Math.round(img.height * scale)
+        canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height)
+        URL.revokeObjectURL(url)
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.82)
+        resolve({ base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' })
+      }
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image load failed')) }
+      img.src = url
+    })
+
   const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -248,13 +268,8 @@ Rules:
     setScanLoading(true)
     simulateScreenshot()
     try {
-      const base64 = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onload = () => resolve((reader.result as string).split(',')[1])
-        reader.onerror = reject
-        reader.readAsDataURL(file)
-      })
-      const raw = await geminiVision(base64, file.type, `You are a sprint & strength coach. Analyze this workout screenshot and extract ALL exercises. Return ONLY a valid JSON array — no markdown, no explanation.
+      const { base64, mimeType } = await compressImage(file)
+      const raw = await geminiVision(base64, mimeType, `You are a sprint & strength coach. Analyze this workout screenshot and extract ALL exercises. Return ONLY a valid JSON array — no markdown, no explanation.
 
 [
   {
