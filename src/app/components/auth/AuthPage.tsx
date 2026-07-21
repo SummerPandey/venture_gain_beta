@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { Moon, Dumbbell } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 
 export function AuthPage() {
@@ -38,18 +37,23 @@ export function AuthPage() {
       return
     }
 
-    const { error } = mode === 'signin'
-      ? await signIn(email, password)
-      : await signUp(email, password)
-
-    setLoading(false)
-
-    if (error) {
-      setError(error.message)
-    } else if (mode === 'signup') {
-      setSuccess('Account created! Check your email to confirm, then sign in.')
-      setMode('signin')
+    if (mode === 'signup') {
+      const { error, session } = await signUp(email, password)
+      setLoading(false)
+      if (error) { setError(error.message); return }
+      // With email confirmation off, Supabase returns a session and the auth
+      // listener logs the user straight in — nothing more to do here.
+      if (!session) {
+        // Confirmation is still enabled on the project; fall back to sign-in.
+        setSuccess('Account created! You can sign in now.')
+        setMode('signin')
+      }
+      return
     }
+
+    const { error } = await signIn(email, password)
+    setLoading(false)
+    if (error) setError(error.message)
   }
 
   return (
@@ -59,13 +63,20 @@ export function AuthPage() {
     >
       {/* Logo area */}
       <div className="mb-8 text-center">
-        <div className="flex justify-center gap-3 mb-3">
-          <div className="p-3 cozy-glow" style={{ background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '50%', border: '3px solid #8B5A3E' }}>
-            <Dumbbell size={28} strokeWidth={2.5} color="#6B4423" />
-          </div>
-          <div className="p-3 cozy-glow" style={{ background: 'linear-gradient(135deg, #9B7FC8 0%, #C4A8E8 100%)', borderRadius: '50%', border: '3px solid #8B5A3E' }}>
-            <Moon size={28} strokeWidth={2.5} color="#6B4423" />
-          </div>
+        <div className="flex justify-center mb-3">
+          <img
+            src="/rock-lee.jpeg"
+            alt="VentureGain"
+            style={{
+              width: '96px',
+              height: '96px',
+              borderRadius: '50%',
+              objectFit: 'cover',
+              objectPosition: 'center',
+              border: '3px solid #8B5A3E',
+              boxShadow: '0 0 24px rgba(255, 159, 102, 0.4), 0 4px 0 rgba(139, 90, 62, 0.25)',
+            }}
+          />
         </div>
         <div className="monument-text" style={{ color: '#6B4423', fontSize: '24px', fontWeight: '800', textShadow: '0 2px 8px rgba(255, 184, 138, 0.3)' }}>
           VentureGain

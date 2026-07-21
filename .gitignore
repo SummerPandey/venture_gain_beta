@@ -59,6 +59,7 @@ app.*.map.json
 .env*.local
 .env
 .env.*
+!.env.example
 CLAUDE.md
 
 # API keys / secrets

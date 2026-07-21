@@ -1,8 +1,10 @@
 import { useState, useRef } from 'react'
 import { ChevronUp, Droplet, Beef, Flame, Candy, Plus, Minus, Pill, X, Camera, Mic, FolderOpen, MessageCircle, Send } from 'lucide-react'
 import { PixelBar } from '@/app/components/shared'
-import { useNutrition } from '@/hooks'
-import { groqText, groqVision } from '@/lib/groq'
+import { useHealthData } from '@/contexts/HealthDataContext'
+import { groqText, groqVision, parseAIJson } from '@/lib/groq'
+
+type NutritionScan = { waterDelta?: number; caloriesDelta?: number; proteinDelta?: number; sugarDelta?: number; description?: string; servingNote?: string }
 
 function LimitWarning({ message }: { message: string }) {
   return (
@@ -109,7 +111,7 @@ export function FoodWaterTab() {
     creatineTaken, toggleCreatine,
     celebration,
     simulateAIScan, approveScan, dismissScan,
-  } = useNutrition()
+  } = useHealthData().nutrition
 
 
   const [scanEditing, setScanEditing] = useState(false)
@@ -156,15 +158,12 @@ export function FoodWaterTab() {
       setScanLoading(true)
       simulateAIScan()
       try {
-        const raw = await groqText(`The user described what they ate: "${transcript}". Return ONLY a JSON object (no markdown, no explanation):
-{
-  "waterDelta": <liters of water content in food, 0-2, number>,
-  "caloriesDelta": <total calories, 0-3000, number>,
-  "proteinDelta": <protein grams, 0-200, number>,
-  "sugarDelta": <sugar grams, 0-100, number>,
-  "description": "<brief food description, max 10 words>"
-}`)
-        const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim())
+        const raw = await groqText(
+          `Estimate nutrition for: "${transcript}"\nReturn ONLY: {"waterDelta":<L>,"caloriesDelta":<kcal>,"proteinDelta":<g>,"sugarDelta":<g>,"description":"<2-6 words>"}`,
+          `You are a precise sports nutrition database for Summer, an athlete. Estimate for the full portion described. Reference: egg 70kcal/6g, chicken breast per 100g 165kcal/31g, whey scoop 120kcal/24g, rice cup 240kcal/5g, oats cup 310kcal/10g, milk cup 150kcal/8g/12gsugar. Water: pure drinks = full volume in L, solid food ≈ 0. Sugar = ADDED/REFINED only — whole fruits always 0g sugar. Be accurate not conservative. Return ONLY valid JSON.`
+        )
+        const parsed = parseAIJson<NutritionScan>(raw)
+        if (!parsed) throw new Error('Could not parse AI response')
         setScanValues({
           water: parsed.waterDelta ?? DEFAULT_SCAN.water,
           calories: parsed.caloriesDelta ?? DEFAULT_SCAN.calories,
@@ -191,15 +190,46 @@ export function FoodWaterTab() {
     resetScanState()
     simulateAIScan()
     try {
-      const raw = await groqText(`The user described what they ate or drank: "${input}". Return ONLY a JSON object (no markdown, no explanation):
-{
-  "waterDelta": <liters of water, 0-3, number — water/drinks count fully, food has small water content>,
-  "caloriesDelta": <total calories, 0-3000, number>,
-  "proteinDelta": <protein grams, 0-200, number>,
-  "sugarDelta": <sugar grams, 0-150, number>,
-  "description": "<concise food name, 2-6 words>"
-}`)
-      const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim())
+      const systemPrompt = `You are a precise sports nutrition database for Summer, an athlete tracking macros. Estimate nutritional values accurately for any food or drink described.
+
+Reference values (use these as anchors):
+- 1 large egg: 70 kcal, 6g protein, 0g sugar
+- 100g chicken breast (cooked): 165 kcal, 31g protein, 0g sugar
+- 100g beef mince (lean): 215 kcal, 26g protein, 0g sugar
+- 100g salmon: 208 kcal, 20g protein, 0g sugar
+- 100g tuna (canned): 116 kcal, 26g protein, 0g sugar
+- 1 scoop whey protein (30g): 120 kcal, 24g protein, 2g sugar
+- 1 cup cooked rice (180g): 240 kcal, 5g protein, 0g sugar
+- 1 cup cooked oats (240g): 310 kcal, 10g protein, 1g sugar
+- 100g dry pasta: 371 kcal, 13g protein, 1g sugar
+- 1 slice bread: 80 kcal, 3g protein, 2g sugar
+- 1 banana (medium, ~118g): 105 kcal, 1g protein, 0g sugar
+- 1 apple (medium, ~182g): 95 kcal, 0g protein, 0g sugar
+- 1 cup mixed berries: 70 kcal, 1g protein, 0g sugar
+- 1 orange (medium): 62 kcal, 1g protein, 0g sugar
+- 1 cup mango chunks: 100 kcal, 1g protein, 0g sugar
+- 1 cup whole milk (240ml): 150 kcal, 8g protein, 12g sugar
+- 1 tbsp peanut butter: 95 kcal, 4g protein, 1g sugar
+- 1 tbsp olive oil: 120 kcal, 0g protein, 0g sugar
+- 1 avocado: 240 kcal, 3g protein, 0g sugar
+- 100g Greek yogurt (full fat): 97 kcal, 9g protein, 4g sugar
+- 100g cottage cheese: 98 kcal, 11g protein, 3g sugar
+
+Rules:
+- Estimate for the FULL portion described, not per 100g
+- If no quantity given, assume a standard single serving
+- For compound meals, sum all components
+- Water: pure water/sparkling = full volume in L; tea/coffee = same; juice/milk/smoothie = 80% of volume; solid food ≈ 0L
+- Be accurate not conservative — athletes need real numbers
+- Sugar tracking is ADDED/REFINED sugars only. Whole fruits (banana, apple, orange, berries, mango, etc.) = 0g sugar. Only count sugar in processed/packaged foods, sweets, juice, soda, sauces, dairy.
+- Return ONLY valid JSON, no markdown, no explanation`
+
+      const raw = await groqText(
+        `Estimate nutrition for: "${input}"\nReturn ONLY: {"waterDelta":<L>,"caloriesDelta":<kcal>,"proteinDelta":<g>,"sugarDelta":<g>,"description":"<2-6 words>"}`,
+        systemPrompt
+      )
+      const parsed = parseAIJson<NutritionScan>(raw)
+      if (!parsed) throw new Error('Could not parse AI response')
       setScanValues({
         water: parsed.waterDelta ?? DEFAULT_SCAN.water,
         calories: parsed.caloriesDelta ?? DEFAULT_SCAN.calories,
@@ -231,22 +261,33 @@ export function FoodWaterTab() {
         reader.onerror = reject
         reader.readAsDataURL(file)
       })
-      const raw = await groqVision(base64, file.type, `You are a nutrition expert. Look at this food image carefully and estimate the nutritional content. Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
+      const raw = await groqVision(base64, file.type, `You are a nutrition expert. Look at this food image carefully.
+
+CRITICAL RULE — SERVING SIZE:
+- If this is a packaged product (box, bag, bottle, tin, wrapper), read the nutrition label and use EXACTLY 1 serving as defined on the label (e.g. "per 100g", "per cup", "per 2 biscuits"). Do NOT multiply by servings per container.
+- If this is a prepared meal or whole food (plate of food, fruit, sandwich, etc.), estimate the portion actually shown.
+- If you can see a nutrition label, trust its numbers for 1 serving over your own estimate.
+
+Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
 {
   "waterDelta": <water content in liters (e.g. a glass of water = 0.25, soup = 0.4, dry food = 0.05), number 0-2>,
-  "caloriesDelta": <total calories for the full portion shown, number 0-3000>,
-  "proteinDelta": <protein in grams, number 0-200>,
-  "sugarDelta": <sugar in grams, number 0-100>,
-  "description": "<2-5 word food name>"
+  "caloriesDelta": <calories for 1 serving or the portion shown, number 0-1500>,
+  "proteinDelta": <protein in grams for 1 serving, number 0-100>,
+  "sugarDelta": <added/refined sugar in grams for 1 serving, number 0-60>,
+  "description": "<2-5 word food name + serving size>",
+  "servingNote": "<e.g. '1 serving (30g)' or 'full plate'>"
 }`)
-      const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim())
+      const parsed = parseAIJson<NutritionScan>(raw)
+      if (!parsed) throw new Error('Could not parse AI response')
       setScanValues({
         water: parsed.waterDelta ?? DEFAULT_SCAN.water,
         calories: parsed.caloriesDelta ?? DEFAULT_SCAN.calories,
         protein: parsed.proteinDelta ?? DEFAULT_SCAN.protein,
         sugar: parsed.sugarDelta ?? DEFAULT_SCAN.sugar,
       })
-      setScanDescription(parsed.description ?? null)
+      const desc = parsed.description ?? null
+      const note = parsed.servingNote ? ` · ${parsed.servingNote}` : ''
+      setScanDescription(desc ? `${desc}${note}` : null)
     } catch {
       setScanError(true)
     } finally {

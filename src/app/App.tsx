@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useRef } from 'react'
 import { Dumbbell, Apple, BarChart3, Moon, Calendar, Settings, Plus, Minus, X, LogOut, ChevronLeft } from 'lucide-react'
 import { WorkoutTab } from './components/features/workout'
 import { WorkoutMode } from './components/features/workout/WorkoutMode'
@@ -8,7 +8,8 @@ import { SleepTab } from './components/features/sleep'
 import { LogTab } from './components/features/log'
 import { AuthPage } from './components/auth/AuthPage'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
-import { supabase } from '@/lib/supabase'
+import { HealthDataProvider } from '@/contexts/HealthDataContext'
+import { UserSettingsProvider, useUserSettings, AVATAR_SPRITES, type UserSettings } from '@/contexts/UserSettingsContext'
 
 interface TabConfig {
   name: string
@@ -23,31 +24,6 @@ const NAV_TABS: TabConfig[] = [
   { name: 'LOG',           icon: Calendar  },
 ]
 
-const SETTINGS_KEY = 'vg_settings_v1'
-
-interface UserSettings {
-  waterTarget: number
-  caloriesTarget: number
-  proteinTarget: number
-  weightKg: number
-  heightCm: number
-  avatar: string
-}
-
-const DEFAULT_SETTINGS: UserSettings = {
-  waterTarget: 3,
-  caloriesTarget: 2500,
-  proteinTarget: 110,
-  weightKg: 70,
-  heightCm: 175,
-  avatar: 'chimchar',
-}
-
-function loadSettings(): UserSettings {
-  try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') } }
-  catch { return DEFAULT_SETTINGS }
-}
-
 const BTN = {
   background: 'linear-gradient(135deg,#FF9F66,#FFB88A)',
   borderRadius: '10px',
@@ -55,213 +31,198 @@ const BTN = {
   boxShadow: '0 4px 0 rgba(139,90,62,0.25)',
 } as const
 
-const INPUT = {
-  background: 'rgba(255,252,248,0.95)',
-  border: '2px solid #8B5A3E',
-  borderRadius: '10px',
-  color: '#6B4423',
-  fontSize: '16px',
-  fontWeight: '700',
-  boxShadow: '0 3px 0 rgba(139,90,62,0.2)',
-  textAlign: 'center' as const,
+// Defined outside SettingsModal so its identity is stable across re-renders.
+// If it were inside, every setDraft call would create a new function reference,
+// React would unmount/remount it, and timerRef would reset — leaking the timer.
+function SettingsRow({ label, unit, value, min, max, onDecrement, onIncrement, onSet }: {
+  label: string; unit: string; value: number; min: number; max: number
+  onDecrement: () => void; onIncrement: () => void; onSet: (v: number) => void
+}) {
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const stopRepeat = () => {
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
+  }
+
+  const startRepeat = (action: () => void) => {
+    action()
+    let delay = 500
+    const tick = () => {
+      action()
+      delay = Math.max(80, Math.floor(delay * 0.82))
+      timerRef.current = setTimeout(tick, delay)
+    }
+    timerRef.current = setTimeout(tick, 600)
+  }
+
+  return (
+    <div className="flex items-center justify-between py-2.5" style={{ borderBottom: '1px solid rgba(139,90,62,0.1)' }}>
+      <div>
+        <div className="monument-text" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>{label}</div>
+        <div className="monument-text" style={{ color: '#A0725A', fontSize: '9px' }}>{unit}</div>
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          onPointerDown={() => startRepeat(onDecrement)}
+          onPointerUp={stopRepeat}
+          onPointerLeave={stopRepeat}
+          onPointerCancel={stopRepeat}
+          className="monument-button flex items-center justify-center"
+          style={{ ...BTN, width: 32, height: 32 }}
+        >
+          <Minus size={13} strokeWidth={2.5} color="#6B4423" />
+        </button>
+        <input
+          type="number"
+          inputMode="numeric"
+          value={value}
+          min={min}
+          max={max}
+          onChange={e => {
+            const v = parseFloat(e.target.value)
+            if (!isNaN(v)) onSet(Math.min(max, Math.max(min, v)))
+          }}
+          onFocus={e => e.target.select()}
+          className="monument-text"
+          style={{
+            width: '52px', textAlign: 'center', background: 'transparent',
+            border: 'none', outline: 'none', color: '#6B4423',
+            fontSize: '15px', fontWeight: '700',
+          }}
+        />
+        <button
+          onPointerDown={() => startRepeat(onIncrement)}
+          onPointerUp={stopRepeat}
+          onPointerLeave={stopRepeat}
+          onPointerCancel={stopRepeat}
+          className="monument-button flex items-center justify-center"
+          style={{ ...BTN, width: 32, height: 32 }}
+        >
+          <Plus size={13} strokeWidth={2.5} color="#6B4423" />
+        </button>
+      </div>
+    </div>
+  )
 }
 
-function SettingsModal({ onClose }: { onClose: () => void }) {
-  const { user } = useAuth()
-  const [tab, setTab] = useState<'goals' | 'metrics'>('goals')
-  const [settings, setSettings] = useState<UserSettings>(loadSettings)
+function SettingsModal({ onClose, onboarding = false }: { onClose: () => void; onboarding?: boolean }) {
+  const { settings: saved, saveSettings } = useUserSettings()
+  const [draft, setDraft] = useState<UserSettings>(saved)
   const [syncing, setSyncing] = useState(false)
 
-  // Load from Supabase on open — overrides localStorage with server values
-  useEffect(() => {
-    if (!user) return
-    supabase
-      .from('user_profiles')
-      .select('water_target,calories_target,protein_target,weight_kg,height_cm,avatar')
-      .eq('user_id', user.id)
-      .maybeSingle()
-      .then(({ data }) => {
-        if (!data) return
-        const merged: UserSettings = {
-          waterTarget:    Number(data.water_target)    || DEFAULT_SETTINGS.waterTarget,
-          caloriesTarget: Number(data.calories_target) || DEFAULT_SETTINGS.caloriesTarget,
-          proteinTarget:  Number(data.protein_target)  || DEFAULT_SETTINGS.proteinTarget,
-          weightKg:       Number(data.weight_kg)       || DEFAULT_SETTINGS.weightKg,
-          heightCm:       Number(data.height_cm)       || DEFAULT_SETTINGS.heightCm,
-          avatar:         data.avatar                  ?? DEFAULT_SETTINGS.avatar,
-        }
-        setSettings(merged)
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged))
-      })
-  }, [user])
-
-  const set = (patch: Partial<UserSettings>) => setSettings(s => ({ ...s, ...patch }))
-
   const handleSave = async () => {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
-    if (user) {
-      setSyncing(true)
-      try {
-        await supabase.from('user_profiles').upsert({
-          user_id:         user.id,
-          water_target:    settings.waterTarget,
-          calories_target: settings.caloriesTarget,
-          protein_target:  settings.proteinTarget,
-          weight_kg:       settings.weightKg,
-          height_cm:       settings.heightCm,
-          avatar:          settings.avatar,
-          updated_at:      new Date().toISOString(),
-        }, { onConflict: 'user_id' })
-      } catch (e) {
-        console.error('Settings save failed:', e)
-      } finally {
-        setSyncing(false)
-      }
-    }
+    setSyncing(true)
+    try { await saveSettings(draft) } catch (e) { console.error(e) } finally { setSyncing(false) }
     onClose()
   }
 
-  const NumRow = ({ label, field, step, min, max }: {
-    label: string
-    field: keyof UserSettings
-    step: number
-    min: number
-    max: number
-  }) => {
-    const val = settings[field] as number
-    return (
-      <div className="mb-5">
-        <div className="monument-text mb-2" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '0.8px' }}>{label}</div>
-        <div className="flex gap-2 items-center">
-          <button
-            onClick={() => set({ [field]: Math.max(min, val - step) })}
-            className="monument-button p-3" style={BTN}
-          >
-            <Minus size={16} strokeWidth={2.5} color="#6B4423" />
-          </button>
-          <input
-            type="number" value={val}
-            onChange={e => set({ [field]: Math.max(min, Math.min(max, Number(e.target.value) || min)) })}
-            onFocus={e => e.target.select()}
-            className="flex-1 px-3 py-3 monument-text"
-            style={INPUT}
-          />
-          <button
-            onClick={() => set({ [field]: Math.min(max, val + step) })}
-            className="monument-button p-3" style={BTN}
-          >
-            <Plus size={16} strokeWidth={2.5} color="#6B4423" />
-          </button>
-        </div>
-      </div>
-    )
-  }
+  const AVATARS = Object.entries(AVATAR_SPRITES).map(([id, sprite]) => ({ id, sprite }))
 
-  const AVATARS = [
-    { id: 'chimchar', sprite: 'https://img.pokemondb.net/sprites/black-white/anim/normal/chimchar.gif' },
-    { id: 'piplup',   sprite: 'https://img.pokemondb.net/sprites/black-white/anim/normal/piplup.gif' },
-    { id: 'turtwig',  sprite: 'https://img.pokemondb.net/sprites/black-white/anim/normal/turtwig.gif' },
-    { id: 'pikachu',  sprite: 'https://img.pokemondb.net/sprites/black-white/normal/pikachu-f.png' },
-  ]
+  const SectionLabel = ({ children }: { children: string }) => (
+    <div className="monument-text mb-2" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', letterSpacing: '1px' }}>{children}</div>
+  )
+
+  const row = (field: keyof UserSettings, step: number, min: number, max: number) => ({
+    value: draft[field] as number,
+    min, max,
+    onDecrement: () => setDraft(s => ({ ...s, [field]: Math.min(max, Math.max(min, (s[field] as number) - step)) })),
+    onIncrement: () => setDraft(s => ({ ...s, [field]: Math.min(max, Math.max(min, (s[field] as number) + step)) })),
+    onSet: (v: number) => setDraft(s => ({ ...s, [field]: v })),
+  })
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4"
-      style={{ background: 'rgba(107,68,35,0.7)', backdropFilter: 'blur(8px)' }}
+      className="fixed inset-0 z-[100] flex items-end justify-center"
+      style={{ background: 'rgba(107,68,35,0.55)', backdropFilter: 'blur(6px)' }}
       onClick={onClose}
     >
       <div
-        className="monument-card w-full max-w-sm max-h-[88vh] flex flex-col"
-        style={{ padding: '24px 20px 20px' }}
+        className="w-full max-w-sm flex flex-col"
+        style={{
+          background: '#FDF6EE',
+          borderRadius: '20px 20px 0 0',
+          border: '2px solid rgba(139,90,62,0.25)',
+          borderBottom: 'none',
+          boxShadow: '0 -8px 32px rgba(107,68,35,0.18)',
+          padding: '0 0 env(safe-area-inset-bottom)',
+          maxHeight: '82vh',
+        }}
         onClick={e => e.stopPropagation()}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between mb-5 flex-shrink-0">
-          <span className="monument-text" style={{ color: '#6B4423', fontSize: '16px', fontWeight: '700', letterSpacing: '0.5px' }}>SETTINGS</span>
-          <button onClick={onClose} className="monument-button" style={{ ...BTN, width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <X size={16} strokeWidth={2.5} color="#6B4423" />
-          </button>
+        {/* Drag handle + header */}
+        <div className="flex-shrink-0 px-5 pt-4 pb-3">
+          <div className="mx-auto mb-3" style={{ width: 36, height: 4, borderRadius: 2, background: 'rgba(139,90,62,0.25)' }} />
+          {onboarding ? (
+            <div className="text-center mb-1">
+              <div className="monument-text" style={{ color: '#6B4423', fontSize: '17px', fontWeight: '800' }}>Welcome!</div>
+              <div className="monument-text mt-1" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700', letterSpacing: '0.3px' }}>Set up your goals & companion to get started</div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <span className="monument-text" style={{ color: '#6B4423', fontSize: '15px', fontWeight: '700', letterSpacing: '0.5px' }}>SETTINGS</span>
+              <button onClick={onClose} className="monument-button flex items-center justify-center" style={{ ...BTN, width: 30, height: 30 }}>
+                <X size={13} strokeWidth={2.5} color="#6B4423" />
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Tab toggle */}
-        <div className="flex gap-2 mb-5 flex-shrink-0">
-          {(['goals', 'metrics'] as const).map(t => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className="monument-button flex-1 py-2.5"
-              style={{
-                background: tab === t ? 'linear-gradient(135deg,#FF9F66,#FFB88A)' : 'rgba(255,252,248,0.95)',
-                borderRadius: '10px',
-                border: `2px solid ${tab === t ? '#8B5A3E' : 'rgba(139,90,62,0.3)'}`,
-                color: tab === t ? '#6B4423' : '#A0725A',
-                fontSize: '11px', fontWeight: '700',
-                boxShadow: tab === t ? '0 3px 0 rgba(139,90,62,0.25)' : 'none',
-              }}
-            >
-              {t === 'goals' ? 'DAILY GOALS' : 'BODY METRICS'}
-            </button>
-          ))}
-        </div>
-
-        {/* Scrollable content */}
-        <div className="flex-1 overflow-y-auto">
-          {tab === 'goals' && (
-            <>
-              <NumRow label="WATER (LITERS)" field="waterTarget" step={0.5} min={0.5} max={10} />
-              <NumRow label="CALORIES" field="caloriesTarget" step={100} min={500} max={6000} />
-              <NumRow label="PROTEIN (GRAMS)" field="proteinTarget" step={5} min={10} max={400} />
-            </>
-          )}
-
-          {tab === 'metrics' && (
-            <>
-              <NumRow label="WEIGHT (KG)" field="weightKg" step={1} min={20} max={300} />
-              <NumRow label="HEIGHT (CM)" field="heightCm" step={1} min={100} max={250} />
-            </>
-          )}
+        {/* Scrollable body */}
+        <div className="flex-1 overflow-y-auto px-5 pb-2">
 
           {/* Avatar */}
-          <div className="mt-2 mb-4">
-            <div className="monument-text mb-3" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '0.8px' }}>CHOOSE AVATAR</div>
-            <div className="grid grid-cols-4 gap-2">
-              {AVATARS.map((av, i) => {
-                const active = settings.avatar === av.id && av.id !== ''
-                const locked = av.id === ''
-                return (
-                  <button
-                    key={i}
-                    onClick={() => !locked && set({ avatar: av.id })}
-                    className="monument-button flex items-center justify-center"
-                    style={{
-                      height: 72,
-                      borderRadius: '14px',
-                      background: active ? 'linear-gradient(135deg,#FF9F66,#FFB88A)' : locked ? 'rgba(139,90,62,0.06)' : 'rgba(255,252,248,0.95)',
-                      border: active ? '2px solid #8B5A3E' : locked ? '1.5px dashed rgba(139,90,62,0.2)' : '2px solid rgba(139,90,62,0.25)',
-                      boxShadow: active ? '0 4px 0 rgba(139,90,62,0.25)' : 'none',
-                      cursor: locked ? 'default' : 'pointer',
-                    }}
-                  >
-                    {av.sprite ? (
-                      <img src={av.sprite} alt={av.id} style={{ width: 40, height: 40, imageRendering: 'pixelated' }} />
-                    ) : (
-                      <span style={{ fontSize: '18px', opacity: 0.2 }}>?</span>
-                    )}
-                  </button>
-                )
-              })}
-            </div>
+          <SectionLabel>COMPANION</SectionLabel>
+          <div className="grid grid-cols-4 gap-2 mb-5">
+            {AVATARS.map((av) => {
+              const active = draft.avatar === av.id
+              return (
+                <button
+                  key={av.id}
+                  onClick={() => setDraft(s => ({ ...s, avatar: av.id }))}
+                  className="monument-button flex flex-col items-center justify-center gap-1"
+                  style={{
+                    height: 64,
+                    borderRadius: '14px',
+                    background: active ? 'linear-gradient(135deg,#FF9F66,#FFB88A)' : 'rgba(255,252,248,0.9)',
+                    border: active ? '2px solid #8B5A3E' : '1.5px solid rgba(139,90,62,0.2)',
+                    boxShadow: active ? '0 3px 0 rgba(139,90,62,0.25)' : 'none',
+                  }}
+                >
+                  <img src={av.sprite} alt={av.id} style={{ width: 36, height: 36, imageRendering: 'pixelated' }} />
+                  <span className="monument-text" style={{ fontSize: '7px', fontWeight: '700', color: active ? '#6B4423' : '#A0725A', letterSpacing: '0.5px', textTransform: 'capitalize' }}>{av.id}</span>
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Daily Goals */}
+          <SectionLabel>DAILY GOALS</SectionLabel>
+          <div className="mb-4" style={{ background: 'rgba(255,252,248,0.9)', borderRadius: '14px', border: '1.5px solid rgba(139,90,62,0.15)', overflow: 'hidden', padding: '0 14px' }}>
+            <SettingsRow label="Water" unit="liters / day" {...row('waterTarget', 0.5, 0.5, 10)} />
+            <SettingsRow label="Calories" unit="kcal / day" {...row('caloriesTarget', 100, 500, 6000)} />
+            <SettingsRow label="Protein" unit="grams / day" {...row('proteinTarget', 5, 10, 400)} />
+            <SettingsRow label="Cardio" unit="minutes / week" {...row('cardioTarget', 10, 10, 600)} />
+          </div>
+
+          {/* Body Metrics */}
+          <SectionLabel>BODY METRICS</SectionLabel>
+          <div className="mb-4" style={{ background: 'rgba(255,252,248,0.9)', borderRadius: '14px', border: '1.5px solid rgba(139,90,62,0.15)', overflow: 'hidden', padding: '0 14px' }}>
+            <SettingsRow label="Weight" unit="kg" {...row('weightKg', 1, 20, 300)} />
+            <SettingsRow label="Height" unit="cm" {...row('heightCm', 1, 100, 250)} />
+            <SettingsRow label="Streak" unit="days" {...row('streakDays', 1, 0, 9999)} />
           </div>
         </div>
 
-        {/* Save button */}
-        <button
-          onClick={handleSave}
-          className="monument-button w-full py-4 flex-shrink-0 mt-2"
-          style={{ ...BTN, color: '#6B4423', fontSize: '13px', fontWeight: '700', letterSpacing: '0.5px' }}
-        >
-          {syncing ? 'SAVING...' : 'SAVE SETTINGS'}
-        </button>
+        {/* Save */}
+        <div className="flex-shrink-0 px-5 pb-5 pt-2">
+          <button
+            onClick={handleSave}
+            className="monument-button w-full py-3.5"
+            style={{ ...BTN, color: '#6B4423', fontSize: '13px', fontWeight: '700', letterSpacing: '0.5px' }}
+          >
+            {syncing ? 'SAVING...' : onboarding ? "LET'S GO →" : 'SAVE SETTINGS'}
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -269,6 +230,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
 
 function AppShell() {
   const { user, loading, signOut } = useAuth()
+  const { isNewUser, loaded: settingsLoaded } = useUserSettings()
   const [activeTab, setActiveTab] = useState(2)
   const [showSettings, setShowSettings] = useState(false)
   const [workoutModeActive, setWorkoutModeActive] = useState(false)
@@ -371,7 +333,7 @@ function AppShell() {
             <div style={{ display: activeTab === 1 ? 'block' : 'none', height: '100%' }}><FoodWaterTab /></div>
             <div style={{ display: activeTab === 2 ? 'block' : 'none', height: '100%' }}><OverviewTab /></div>
             <div style={{ display: activeTab === 3 ? 'block' : 'none', height: '100%' }}><SleepTab /></div>
-            <div style={{ display: activeTab === 4 ? 'block' : 'none', height: '100%' }}><LogTab /></div>
+            <div style={{ display: activeTab === 4 ? 'block' : 'none', height: '100%' }}><LogTab isActive={activeTab === 4} /></div>
           </>
         )}
       </div>
@@ -469,6 +431,7 @@ function AppShell() {
       </nav>
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {!showSettings && settingsLoaded && isNewUser && <SettingsModal onClose={() => {}} onboarding />}
     </div>
   )
 }
@@ -476,7 +439,11 @@ function AppShell() {
 export default function App() {
   return (
     <AuthProvider>
-      <AppShell />
+      <UserSettingsProvider>
+        <HealthDataProvider>
+          <AppShell />
+        </HealthDataProvider>
+      </UserSettingsProvider>
     </AuthProvider>
   )
 }

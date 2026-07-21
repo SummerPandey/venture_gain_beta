@@ -23,15 +23,4 @@ export interface ExerciseProgress {
   unit: string
 }
 
-export interface WorkoutCategory {
-  category: string
-  exercise: string
-  current: number
-  goal: number
-  progress: number
-  icon: LucideIcon
-  unit: string
-  exercises: string[]
-}
-
 export type TrackingMode = 'energy' | 'weights'

@@ -3,9 +3,3 @@ export interface SleepState {
   sleepMinutes: number
   energyLevel: number
 }
-
-export interface WeeklyDataPoint {
-  day: string
-  sleep: number
-  energy: number
-}

@@ -5,22 +5,30 @@ export function useLog() {
   const [currentMonth, setCurrentMonth] = useState(new Date().getMonth())
   const [currentYear, setCurrentYear] = useState(new Date().getFullYear())
   const [selectedDay, setSelectedDay] = useState<number | null>(null)
-  const [expandedWeek, setExpandedWeek] = useState<number | null>(null)
+  const [expandedWeek, setExpandedWeek] = useState<number | null>(() => {
+    const today = new Date()
+    const month = today.getMonth()
+    const year = today.getFullYear()
+    const todayDay = today.getDate()
+    let weekNum = 1
+    for (let d = 1; d <= new Date(year, month + 1, 0).getDate(); d++) {
+      if (d === todayDay) return weekNum
+      if (new Date(year, month, d).getDay() === 0) weekNum++
+    }
+    return null
+  })
   const [activeView, setActiveView] = useState<LogView>('log')
   const [selectedCategory, setSelectedCategory] = useState<LogCategory>('workouts')
   const [selectedPeriod, setSelectedPeriod] = useState<LogPeriod>('daily')
   const [showChat, setShowChat] = useState(false)
   const [showInsights, setShowInsights] = useState(false)
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+  const [chatMessages] = useState<ChatMessage[]>([
     { text: "Hi! I'm your wellness companion. How can I help you today?", isUser: false },
   ])
-  const [chatInput, setChatInput] = useState('')
+  const [chatInput] = useState('')
 
   const getDaysInMonth = (month: number, year: number) =>
     new Date(year, month + 1, 0).getDate()
-
-  const getFirstDayOfMonth = (month: number, year: number) =>
-    new Date(year, month, 1).getDay()
 
   const goToPrevMonth = () => {
     if (currentMonth === 0) { setCurrentMonth(11); setCurrentYear(y => y - 1) }
@@ -54,17 +62,6 @@ export function useLog() {
     return weeks.reverse()
   }
 
-  const sendMessage = () => {
-    if (!chatInput.trim()) return
-    const userMsg: ChatMessage = { text: chatInput, isUser: true }
-    const botReply: ChatMessage = {
-      text: "Great question! Keep tracking your health data consistently for the best insights.",
-      isUser: false,
-    }
-    setChatMessages(prev => [...prev, userMsg, botReply])
-    setChatInput('')
-  }
-
   return {
     currentMonth, currentYear, selectedDay, setSelectedDay,
     expandedWeek, setExpandedWeek,
@@ -73,9 +70,8 @@ export function useLog() {
     selectedPeriod, setSelectedPeriod,
     showChat, setShowChat,
     showInsights, setShowInsights,
-    chatMessages, chatInput, setChatInput,
-    daysInMonth, getDayName, getWeeks, getFirstDayOfMonth,
+    chatMessages, chatInput,
+    getDayName, getWeeks,
     goToPrevMonth, goToNextMonth,
-    sendMessage,
   }
 }

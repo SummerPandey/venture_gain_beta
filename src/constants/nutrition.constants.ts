@@ -1,4 +1,4 @@
-import type { NutritionLimits, AIScanResult } from '@/types'
+import type { NutritionLimits } from '@/types'
 
 export const NUTRITION_LIMITS: NutritionLimits = {
   waterTarget: 3,
@@ -15,13 +15,6 @@ export const WATER_MAX = 6
 export const CALORIES_MAX = 4000
 export const PROTEIN_MAX = 300
 export const SUGAR_MAX = 100
-
-export const AI_SCAN_RESULT: AIScanResult = {
-  waterDelta: 1,
-  caloriesDelta: 300,
-  proteinDelta: 30,
-  sugarDelta: 10,
-}
 
 export const WATER_STEP = 0.5
 export const CALORIES_STEP = 100

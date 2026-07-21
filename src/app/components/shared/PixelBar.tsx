@@ -5,8 +5,6 @@ interface PixelBarProps {
   value: number
   max: number
   color?: string
-  textColor?: string
-  secondaryTextColor?: string
   icon?: ReactNode
   target?: number
   unit?: string
@@ -32,8 +30,6 @@ export function PixelBar({
   value,
   max,
   color = '#E89B6C',
-  textColor = '#5C3D2E',
-  secondaryTextColor = '#8B6F47',
   icon,
   target,
   unit = '',

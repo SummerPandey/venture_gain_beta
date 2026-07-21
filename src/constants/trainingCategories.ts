@@ -65,5 +65,3 @@ export const REST_DAY_CATEGORY = {
   shadow: 'rgba(155,127,200,0.3)',
   exercises: [] as readonly string[],
 } as const
-
-export type TrainingCategoryName = typeof TRAINING_CATEGORIES[number]['name'] | 'Rest Day'

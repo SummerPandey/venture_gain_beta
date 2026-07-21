@@ -1,7 +1,7 @@
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from 'recharts'
 import { Moon, Zap, Plus, Minus } from 'lucide-react'
 import { PixelBar } from '@/app/components/shared'
-import { useSleep } from '@/hooks'
+import { useHealthData } from '@/contexts/HealthDataContext'
 
 interface SleepStepperProps {
   label: string
@@ -59,7 +59,11 @@ export function SleepTab() {
     adjustSleepHours, setSleepHours,
     adjustSleepMinutes, setSleepMinutes,
     adjustEnergy, setEnergy,
-  } = useSleep()
+  } = useHealthData().sleep
+
+  const maxSleepVal = weeklyChartData.reduce((m, d) => Math.max(m, d.sleep), 0)
+  const yMax = Math.max(10, Math.ceil(maxSleepVal / 2) * 2 + 2)
+  const yTicks = Array.from({ length: Math.floor(yMax / 2) + 1 }, (_, i) => i * 2)
 
   return (
     <div className="p-6 max-w-md mx-auto">
@@ -169,8 +173,8 @@ export function SleepTab() {
             <YAxis
               tick={{ fill: '#A0725A', fontSize: 10, fontFamily: 'Poppins', fontWeight: 700 }}
               axisLine={{ stroke: 'rgba(160, 114, 90, 0.2)' }}
-              domain={[0, 10]}
-              ticks={[0, 2, 4, 6, 8, 10]}
+              domain={[0, yMax]}
+              ticks={yTicks}
             />
             <Bar dataKey="sleep" fill="#9B7FC8" radius={[8, 8, 0, 0]} />
             <Bar dataKey="energy" fill="#FFD166" radius={[8, 8, 0, 0]} />

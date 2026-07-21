@@ -1,14 +1,13 @@
 import { useState, useEffect, useMemo } from 'react'
 import { RadarChart, PolarGrid, PolarAngleAxis, Radar, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts'
-import { Activity, TrendingUp, Dumbbell, X } from 'lucide-react'
-import { LEVEL, CURRENT_MOMENTUM, NEXT_LEVEL_MOMENTUM, TIER_THRESHOLDS, STREAK_YEARS, STREAK_ANNIVERSARY } from '@/constants'
+import { ChevronLeft, ChevronRight, X, Moon } from 'lucide-react'
+import { LEVEL, CURRENT_MOMENTUM, NEXT_LEVEL_MOMENTUM, TIER_THRESHOLDS } from '@/constants'
+import type { WorkoutEntry } from '@/types'
 import { SUPPLEMENT_MOMENTUM_PER_VITAMIN } from '@/hooks/useNutrition'
-import { useNutrition } from '@/hooks/useNutrition'
-import { useWorkout } from '@/hooks/useWorkout'
-import { useSleep } from '@/hooks/useSleep'
-import { healthSnapshot } from '@/store/healthSnapshot'
-import { supabase } from '@/lib/supabase'
+import { useHealthData } from '@/contexts/HealthDataContext'
+import { supabase, getToday } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
+import { useUserSettings, AVATAR_SPRITES } from '@/contexts/UserSettingsContext'
 
 type ChimcharMood = 'fired_up' | 'happy' | 'tired' | 'resting'
 
@@ -46,26 +45,7 @@ const MOOD_CONFIG: Record<ChimcharMood, {
   },
 }
 
-function computeMood(): ChimcharMood {
-  const snap = healthSnapshot
-  const w = snap.workoutLevel / 100
-  const e = snap.energyLevel / 100
-  const s = Math.min(1, snap.sleepHours / 8)
-  const h = Math.min(1, snap.waterLiters / 3)
-  const score = (w + e + s + h) / 4
-  if (score >= 0.40) return 'fired_up'
-  if (score >= 0.22) return 'happy'
-  if (score >= 0.12) return 'tired'
-  return 'resting'
-}
 
-function daysUntilNextAnniversary(): number {
-  const today = new Date()
-  const year = today.getFullYear()
-  let next = new Date(year, STREAK_ANNIVERSARY.month, STREAK_ANNIVERSARY.day)
-  if (next <= today) next = new Date(year + 1, STREAK_ANNIVERSARY.month, STREAK_ANNIVERSARY.day)
-  return Math.ceil((next.getTime() - today.getTime()) / 86_400_000)
-}
 
 function getTierName(level: number): string {
   for (const tier of TIER_THRESHOLDS) {
@@ -127,30 +107,147 @@ const EXERCISE_GOALS: Record<string, number> = {
 const AXIS_TICK = { fill: '#A0725A', fontSize: 9, fontFamily: 'Poppins', fontWeight: 700 } as const
 const GRID = { strokeDasharray: '3 3', stroke: 'rgba(160,114,90,0.2)' } as const
 
+// Category base scores — reflects how demanding each training type is
+const CAT_BASE: Record<string, number> = {
+  'Speed': 90,
+  'Speed Endurance': 85,
+  'Tempo': 70,
+  'Upper': 80,
+  'Lower': 80,
+  'Push': 75,
+  'Pull': 75,
+  'Rest Day': 45,
+}
+
+function computeWorkoutScore(workouts: WorkoutEntry[]): number {
+  if (workouts.length === 0) return 0
+
+  const uniqueCats = [...new Set(workouts.map(w => w.category).filter(Boolean))] as string[]
+  const isOnlyRest = uniqueCats.length === 1 && uniqueCats[0] === 'Rest Day'
+  if (isOnlyRest) return 45
+
+  // Highest-intensity category sets the floor
+  const nonRest = uniqueCats.filter(c => c !== 'Rest Day')
+  const base = nonRest.length > 0
+    ? Math.max(...nonRest.map(c => CAT_BASE[c] ?? 70))
+    : 70
+
+  // Volume bonus: each exercise after the first adds +1 (max +5)
+  const active = workouts.filter(w => w.category !== 'Rest Day')
+  const volumeBonus = Math.min(5, active.length - 1)
+
+  // Energy bonus: avg exercise energy rating (1–5) → up to +10 pts
+  const ratings = active.map(w => w.energyRating ?? 3)
+  const avgRating = ratings.reduce((s, r) => s + r, 0) / ratings.length
+  const energyBonus = ((avgRating - 1) / 4) * 10
+
+  return Math.min(100, Math.round(base + volumeBonus + energyBonus))
+}
+
+
+type HistoricalDay = {
+  workoutLevel: number; energyWorkout: number
+  sleepHours: number; sleepMinutes: number; energyLevel: number
+  waterLiters: number; calories: number
+  workouts: WorkoutEntry[]
+}
+
+function offsetDate(base: string, delta: number): string {
+  const d = new Date(base + 'T12:00:00')
+  d.setDate(d.getDate() + delta)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function formatDateLabel(dateStr: string): string {
+  if (dateStr === getToday()) return 'Today'
+  if (dateStr === offsetDate(getToday(), -1)) return 'Yesterday'
+  const d = new Date(dateStr + 'T12:00:00')
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
 
 export function OverviewTab() {
   const { user } = useAuth()
+  const { settings } = useUserSettings()
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
   const [selectedExercise, setSelectedExercise] = useState<string | null>(null)
   const [supplementMomentum, setSupplementMomentum] = useState(0)
+  const [viewingDate, setViewingDate] = useState(() => getToday())
+  const [histDay, setHistDay] = useState<HistoricalDay | null>(null)
+  const [loadingDay, setLoadingDay] = useState(false)
 
-  const { state: nutrition } = useNutrition()
-  const { workoutLevel, todayWorkouts, energyLevel: workoutEnergy, historicalLogs } = useWorkout()
-  const { state: sleep, totalSleepHours } = useSleep()
+  const { nutrition: nutritionCtx, workout: workoutCtx, sleep: sleepCtx } = useHealthData()
+  const { state: nutrition } = nutritionCtx
+  const { todayWorkouts, historicalLogs } = workoutCtx
+  const { state: sleep, totalSleepHours } = sleepCtx
+
+  const isToday = viewingDate === getToday()
+
+  useEffect(() => {
+    if (isToday || !user) { setHistDay(null); return }
+    setLoadingDay(true)
+    Promise.all([
+      supabase
+        .from('daily_logs')
+        .select('workout_level, energy_level_workout, sleep_hours, sleep_minutes, energy_level, water_liters, calories, today_workouts')
+        .eq('user_id', user.id)
+        .eq('log_date', viewingDate)
+        .single(),
+      supabase
+        .from('workout_entries')
+        .select('exercise, category, type, energy_rating, sets')
+        .eq('user_id', user.id)
+        .eq('log_date', viewingDate),
+    ]).then(([{ data }, { data: entries }]) => {
+      if (!data) { setHistDay(null); setLoadingDay(false); return }
+      // prefer workout_entries (has proper categories); fall back to today_workouts JSONB
+      const workouts: WorkoutEntry[] = (entries && entries.length > 0)
+        ? entries.map(e => ({ exercise: e.exercise, category: e.category ?? undefined, type: e.type as 'energy' | 'weights', energyRating: e.energy_rating ?? undefined, sets: e.sets ?? undefined, time: '' }))
+        : (Array.isArray(data.today_workouts) ? data.today_workouts : [])
+      setHistDay({
+        workoutLevel: Number(data.workout_level) || 0,
+        energyWorkout: Number(data.energy_level_workout) || 0,
+        sleepHours: Number(data.sleep_hours) || 0,
+        sleepMinutes: Number(data.sleep_minutes) || 0,
+        energyLevel: Number(data.energy_level) || 0,
+        waterLiters: Number(data.water_liters) || 0,
+        calories: Number(data.calories) || 0,
+        workouts,
+      })
+      setLoadingDay(false)
+    })
+  }, [viewingDate, user, isToday])
 
   const radarStats = useMemo(() => {
-    const calories = nutrition.calories
-    const water = nutrition.waterLiters
-    const workout = todayWorkouts.length > 0 ? workoutLevel : 0
-    const energyVal = sleep.energyLevel > 0 ? sleep.energyLevel * 10 : workoutEnergy
+    if (!isToday && histDay) {
+      const sleepTotal = histDay.sleepHours + histDay.sleepMinutes / 60
+      return [
+        { stat: 'FOOD',    value: Math.min(100, Math.round(histDay.calories / 2500 * 100)) },
+        { stat: 'WATER',   value: Math.min(100, Math.round(histDay.waterLiters / 3 * 100)) },
+        { stat: 'SLEEP',   value: Math.min(100, Math.round(sleepTotal / 9 * 100)) },
+        { stat: 'WORKOUT', value: computeWorkoutScore(histDay.workouts) },
+        { stat: 'ENERGY',  value: Math.min(100, Math.round(histDay.energyLevel * 10)) },
+      ]
+    }
+
+    // FOOD, WATER, SLEEP: 0–100% of daily goal — reset each day, go up as you hit targets
+    const foodVal  = Math.min(100, Math.round(nutrition.calories / 2500 * 100))
+    const waterVal = Math.min(100, Math.round(nutrition.waterLiters / 3 * 100))
+    const sleepVal = Math.min(100, Math.round(totalSleepHours / 9 * 100))  // 9 hrs = 100%
+
+    // WORKOUT: scored per session — category sets the base, volume + energy rating add bonus
+    const workoutVal = computeWorkoutScore(todayWorkouts)
+
+    // ENERGY: strictly from the sleep tab 1–10 daily rating (no workout-energy fallback)
+    const energyVal = Math.min(100, Math.round(sleep.energyLevel * 10))
+
     return [
-      { stat: 'FOOD',    value: Math.min(100, Math.round(calories / 2500 * 100)) },
-      { stat: 'WATER',   value: Math.min(100, Math.round(water / 3 * 100)) },
-      { stat: 'SLEEP',   value: Math.min(100, Math.round(totalSleepHours / 9 * 100)) },
-      { stat: 'WORKOUT', value: Math.min(100, Math.round(workout)) },
-      { stat: 'ENERGY',  value: Math.min(100, Math.round(energyVal)) },
+      { stat: 'FOOD',    value: foodVal },
+      { stat: 'WATER',   value: waterVal },
+      { stat: 'SLEEP',   value: sleepVal },
+      { stat: 'WORKOUT', value: workoutVal },
+      { stat: 'ENERGY',  value: energyVal },
     ]
-  }, [nutrition.calories, nutrition.waterLiters, workoutLevel, todayWorkouts.length, sleep.energyLevel, workoutEnergy, totalSleepHours])
+  }, [isToday, histDay, nutrition.calories, nutrition.waterLiters, todayWorkouts, sleep.energyLevel, totalSleepHours])
 
   useEffect(() => {
     if (!user) return
@@ -216,9 +313,36 @@ export function OverviewTab() {
     return { sessions, bestWeight, bestEnergy, goal, isWeights, chartData }
   }, [selectedExercise, historicalLogs])
 
-  const daysLeft = daysUntilNextAnniversary()
-  const mood = computeMood()
-  const moodCfg = MOOD_CONFIG[mood]
+  const streakDays = settings.streakDays
+  const streakYearsCompleted = streakDays > 0 ? Math.floor(streakDays / 365) : 0
+  const daysToNextYear = streakDays > 0 ? 365 - (streakDays % 365) : null
+
+  const mood = useMemo((): ChimcharMood => {
+    let w: number, e: number, s: number, h: number, f: number
+    if (!isToday && histDay) {
+      const sleepTotal = histDay.sleepHours + histDay.sleepMinutes / 60
+      w = computeWorkoutScore(histDay.workouts) / 100
+      e = histDay.energyLevel / 10
+      s = Math.min(1, sleepTotal / 9)
+      h = Math.min(1, histDay.waterLiters / 3)
+      f = Math.min(1, histDay.calories / 2500)
+    } else {
+      w = computeWorkoutScore(todayWorkouts) / 100
+      e = sleep.energyLevel / 10
+      s = Math.min(1, totalSleepHours / 9)
+      h = Math.min(1, nutrition.waterLiters / 3)
+      f = Math.min(1, nutrition.calories / 2500)
+    }
+    const score = (w + e + s + h + f) / 5
+    if (score >= 0.40) return 'fired_up'
+    if (score >= 0.22) return 'happy'
+    if (score >= 0.12) return 'tired'
+    return 'resting'
+  }, [isToday, histDay, todayWorkouts, sleep.energyLevel, totalSleepHours, nutrition.waterLiters, nutrition.calories])
+  const avatarSprite = mood === 'resting'
+    ? 'https://img.pokemondb.net/sprites/black-white/anim/normal/magikarp.gif'
+    : (AVATAR_SPRITES[settings.avatar] ?? AVATAR_SPRITES['chimchar'])
+  const moodCfg = { ...MOOD_CONFIG[mood], sprite: avatarSprite }
   const totalMomentum = CURRENT_MOMENTUM + supplementMomentum
   const progressPercentage = Math.min(100, (totalMomentum / NEXT_LEVEL_MOMENTUM) * 100)
   const tierName = getTierName(LEVEL)
@@ -228,11 +352,33 @@ export function OverviewTab() {
   return (
     <div className="p-6 max-w-md mx-auto">
       <h2
-        className="monument-text mb-6 text-center"
+        className="monument-text mb-4 text-center"
         style={{ color: '#6B4423', fontSize: '20px', fontWeight: '700', textShadow: '0 2px 8px rgba(255, 184, 138, 0.3)' }}
       >
         Overview
       </h2>
+
+      {/* Date nav */}
+      <div className="monument-card flex items-center justify-between px-4 py-2 mb-6">
+        <button
+          onClick={() => setViewingDate(d => offsetDate(d, -1))}
+          className="monument-button p-1.5"
+          style={{ background: 'linear-gradient(135deg,#FF9F66,#FFB88A)', borderRadius: '8px', border: '2px solid #8B5A3E', boxShadow: '0 3px 0 rgba(139,90,62,0.25)' }}
+        >
+          <ChevronLeft size={16} strokeWidth={2.5} color="#6B4423" />
+        </button>
+        <div className="monument-text text-center" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>
+          {loadingDay ? '...' : formatDateLabel(viewingDate)}
+        </div>
+        <button
+          onClick={() => setViewingDate(d => { const next = offsetDate(d, 1); return next > getToday() ? d : next })}
+          disabled={isToday}
+          className="monument-button p-1.5"
+          style={{ background: isToday ? 'rgba(255,252,248,0.5)' : 'linear-gradient(135deg,#FF9F66,#FFB88A)', borderRadius: '8px', border: '2px solid #8B5A3E', boxShadow: '0 3px 0 rgba(139,90,62,0.25)', opacity: isToday ? 0.4 : 1 }}
+        >
+          <ChevronRight size={16} strokeWidth={2.5} color="#6B4423" />
+        </button>
+      </div>
 
       {/* Level + Streak Row */}
       <div className="flex gap-4 mb-8">
@@ -255,12 +401,18 @@ export function OverviewTab() {
 
         <div className="monument-card p-4 text-center">
           <div className="monument-text mb-1" style={{ color: '#A0725A', fontSize: '8px', fontWeight: '700', letterSpacing: '1px' }}>STREAK</div>
-          <div className="monument-text" style={{ color: '#FF9F66', fontSize: '24px', fontWeight: '800', lineHeight: 1, textShadow: '0 2px 8px rgba(255, 184, 138, 0.3)' }}>{STREAK_YEARS}</div>
-          <div className="monument-text mb-3" style={{ color: '#A0725A', fontSize: '8px', fontWeight: '700', letterSpacing: '1px' }}>YEARS</div>
-          <div style={{ height: '1px', background: 'rgba(139, 90, 62, 0.15)', marginBottom: '10px' }} />
-          <div className="monument-text" style={{ color: '#6B4423', fontSize: '18px', fontWeight: '800', lineHeight: 1 }}>{daysLeft}</div>
-          <div className="monument-text mt-1" style={{ color: '#A0725A', fontSize: '7px', fontWeight: '700', letterSpacing: '0.8px' }}>DAYS TO</div>
-          <div className="monument-text" style={{ color: '#A0725A', fontSize: '7px', fontWeight: '700', letterSpacing: '0.8px' }}>YEAR {STREAK_YEARS + 1}</div>
+          <div className="monument-text" style={{ color: '#FF9F66', fontSize: '22px', fontWeight: '800', lineHeight: 1, textShadow: '0 2px 8px rgba(255, 184, 138, 0.3)' }}>
+            {streakDays > 0 ? streakDays : '—'}
+          </div>
+          <div className="monument-text mb-3" style={{ color: '#A0725A', fontSize: '8px', fontWeight: '700', letterSpacing: '1px' }}>DAYS</div>
+          {daysToNextYear !== null && (
+            <>
+              <div style={{ height: '1px', background: 'rgba(139, 90, 62, 0.15)', marginBottom: '10px' }} />
+              <div className="monument-text" style={{ color: '#6B4423', fontSize: '18px', fontWeight: '800', lineHeight: 1 }}>{daysToNextYear}</div>
+              <div className="monument-text mt-1" style={{ color: '#A0725A', fontSize: '7px', fontWeight: '700', letterSpacing: '0.8px' }}>DAYS TO</div>
+              <div className="monument-text" style={{ color: '#A0725A', fontSize: '7px', fontWeight: '700', letterSpacing: '0.8px' }}>YEAR {streakYearsCompleted + 1}</div>
+            </>
+          )}
         </div>
       </div>
 
@@ -324,7 +476,10 @@ export function OverviewTab() {
         <div className="grid grid-cols-2 gap-3">
           {CATEGORIES.map(cat => {
             const stats = categoryStats[cat.name]
-            const count = stats?.logged.size ?? 0
+            const isRestDay = cat.exercises.length === 0
+            const count = isRestDay
+              ? historicalLogs.filter(d => d.workouts.some(w => w.category === 'Rest Day' || w.exercise === 'Rest Day')).length
+              : (stats?.logged.size ?? 0)
             return (
               <button
                 key={cat.name}
@@ -341,9 +496,11 @@ export function OverviewTab() {
                   {cat.name}
                 </span>
                 <span style={{ color: 'rgba(255,255,255,0.85)', fontSize: '9px', fontWeight: '700', fontFamily: 'Poppins' }}>
-                  {count > 0 ? `${count} exercise${count > 1 ? 's' : ''} logged` : 'No data yet'}
+                  {isRestDay
+                    ? (count > 0 ? `${count} rest day${count > 1 ? 's' : ''} taken` : 'No rest days logged')
+                    : (count > 0 ? `${count} exercise${count > 1 ? 's' : ''} logged` : 'No data yet')}
                 </span>
-                {count > 0 && (
+                {count > 0 && !isRestDay && (
                   <div style={{ width: '100%', height: 3, background: 'rgba(255,255,255,0.25)', borderRadius: 2, marginTop: 2 }}>
                     <div style={{ width: `${Math.min(100, (count / cat.exercises.length) * 100)}%`, height: '100%', background: 'rgba(255,255,255,0.85)', borderRadius: 2 }} />
                   </div>
@@ -380,15 +537,41 @@ export function OverviewTab() {
 
             {/* Exercise list */}
             <div className="flex flex-col gap-2 overflow-y-auto flex-1">
-              {selectedCategoryData.exercises.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-10 gap-3">
-                  <div style={{ fontSize: '36px' }}>🛌</div>
-                  <div className="monument-text text-center" style={{ color: '#6B4423', fontSize: '13px', fontWeight: '700' }}>Rest & Recovery</div>
-                  <div className="monument-text text-center px-4" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700', lineHeight: 1.6 }}>
-                    Rest days are when your body actually gets stronger. Track rest days from the Workout tab to keep your streak going.
-                  </div>
-                </div>
-              )}
+              {selectedCategoryData.exercises.length === 0 && (() => {
+                const restSessions = historicalLogs
+                  .filter(d => d.workouts.some(w => w.category === 'Rest Day' || w.exercise === 'Rest Day'))
+                  .sort((a, b) => b.date.localeCompare(a.date))
+                return (
+                  <>
+                    <div className="flex flex-col items-center justify-center py-6 gap-2 flex-shrink-0">
+                      <div className="flex items-center justify-center" style={{ width: 56, height: 56, borderRadius: '50%', background: 'linear-gradient(135deg,#9B7FC8,#B89FDE)', border: '2.5px solid #7A5FA8' }}>
+                        <Moon size={26} strokeWidth={2.5} color="#fff" />
+                      </div>
+                      <div className="monument-text text-center" style={{ color: '#6B4423', fontSize: '13px', fontWeight: '700' }}>Rest & Recovery</div>
+                      <div className="monument-text text-center px-4" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700', lineHeight: 1.6 }}>
+                        Rest days are when your body actually gets stronger.
+                      </div>
+                    </div>
+                    {restSessions.length === 0 ? (
+                      <div className="monument-text text-center py-4" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700' }}>
+                        No rest days logged yet. Track from the Workout tab.
+                      </div>
+                    ) : (
+                      <>
+                        <div className="monument-text px-1 mb-1 flex-shrink-0" style={{ color: '#7A5FA8', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px' }}>
+                          REST DAY HISTORY ({restSessions.length})
+                        </div>
+                        {restSessions.map((day, i) => (
+                          <div key={i} className="flex items-center justify-between px-4 py-3" style={{ background: 'rgba(155,127,200,0.08)', borderRadius: '12px', border: '1.5px solid rgba(155,127,200,0.3)' }}>
+                            <span className="monument-text" style={{ color: '#6B4423', fontSize: '11px', fontWeight: '700' }}>{formatDateLabel(day.date)}</span>
+                            <span style={{ color: '#9B7FC8', fontSize: '10px', fontWeight: '700', fontFamily: 'Poppins' }}>Rest ✓</span>
+                          </div>
+                        ))}
+                      </>
+                    )}
+                  </>
+                )
+              })()}
               {selectedCategoryData.exercises.map(exercise => {
                 // Find sessions for this exercise
                 const sessions = historicalLogs.filter(d =>

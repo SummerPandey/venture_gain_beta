@@ -17,10 +17,3 @@ export interface NutritionState {
   multivitamins: number
   uploadedImage: string | null
 }
-
-export interface AIScanResult {
-  waterDelta: number
-  caloriesDelta: number
-  proteinDelta: number
-  sugarDelta: number
-}

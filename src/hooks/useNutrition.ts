@@ -6,170 +6,168 @@ import {
   WATER_STEP, CALORIES_STEP, PROTEIN_STEP, SUGAR_STEP,
 } from '@/constants'
 import { healthSnapshot } from '@/store/healthSnapshot'
-import { supabase, TODAY } from '@/lib/supabase'
+import { supabase, getToday } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
+import { useUserSettings } from '@/contexts/UserSettingsContext'
 
 export const SUPPLEMENT_MOMENTUM_PER_VITAMIN = 5
 
+/** Local date string for week start (Saturday), using local time — no UTC drift */
 function getWeekStart(): string {
   const d = new Date()
   const day = d.getDay()
   const diff = day === 6 ? 0 : -(day + 1)
   const saturday = new Date(d)
   saturday.setDate(d.getDate() + diff)
-  return saturday.toISOString().split('T')[0]
+  return `${saturday.getFullYear()}-${String(saturday.getMonth() + 1).padStart(2, '0')}-${String(saturday.getDate()).padStart(2, '0')}`
 }
 
-const LS_KEY = `nutrition_${TODAY}`
-const CREATINE_KEY = `creatine_${TODAY}`
-const VITAMINS_KEY = `vitamins_${getWeekStart()}`
-
-function lsLoad(): Partial<{ waterLiters: number; calories: number; proteinGrams: number; sugarGrams: number }> {
-  try { return JSON.parse(localStorage.getItem(LS_KEY) ?? 'null') ?? {} } catch { return {} }
-}
-function lsSave(waterLiters: number, calories: number, proteinGrams: number, sugarGrams: number) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify({ waterLiters, calories, proteinGrams, sugarGrams })) } catch {}
-}
-function lsCreatineLoad(): boolean {
-  try { return localStorage.getItem(CREATINE_KEY) === 'true' } catch { return false }
-}
-function lsCreatineSave(val: boolean) {
-  try { localStorage.setItem(CREATINE_KEY, String(val)) } catch {}
-}
-function lsVitaminsLoad(): { weekly: number; today: number; ts?: number } {
-  try { return JSON.parse(localStorage.getItem(VITAMINS_KEY) ?? 'null') ?? { weekly: 0, today: 0 } } catch { return { weekly: 0, today: 0 } }
-}
-function lsVitaminsSave(weekly: number, today: number, userInitiated = false) {
-  try { localStorage.setItem(VITAMINS_KEY, JSON.stringify({ weekly, today, ts: userInitiated ? Date.now() : undefined })) } catch {}
-}
 
 async function upsertDay(userId: string, fields: Record<string, unknown>) {
-  const { data: updated, error: updateError } = await supabase
+  const { error } = await supabase
     .from('daily_logs')
-    .update({ ...fields, updated_at: new Date().toISOString() })
-    .eq('user_id', userId)
-    .eq('log_date', TODAY)
-    .select('id')
-  if (updateError) console.error('[nutrition] UPDATE error:', updateError)
-  if (!updated || updated.length === 0) {
-    const { error: insertError } = await supabase.from('daily_logs').insert({
-      user_id: userId,
-      log_date: TODAY,
-      ...fields,
-      updated_at: new Date().toISOString(),
-    })
-    if (insertError) console.error('[nutrition] INSERT error:', insertError)
-    else console.log('[nutrition] INSERT ok', fields)
-  } else {
-    console.log('[nutrition] UPDATE ok', fields)
-  }
+    .upsert(
+      { user_id: userId, log_date: getToday(), ...fields, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id,log_date' }
+    )
+  if (error) console.error('[nutrition] upsert error:', error)
 }
 
 export function useNutrition() {
   const { user } = useAuth()
+  const { settings } = useUserSettings()
 
-  const cached = lsLoad()
   const [state, setState] = useState<NutritionState>({
-    waterLiters: cached.waterLiters ?? 0,
-    calories: cached.calories ?? 0,
-    proteinGrams: cached.proteinGrams ?? 0,
-    sugarGrams: cached.sugarGrams ?? 0,
+    waterLiters: 0,
+    calories: 0,
+    proteinGrams: 0,
+    sugarGrams: 0,
     multivitamins: 0,
     uploadedImage: null,
   })
   const [loaded, setLoaded] = useState(false)
 
-  const vitCached = lsVitaminsLoad()
-  const [weeklyMultivitamins, setWeeklyMultivitamins] = useState(vitCached.weekly)
-  const [todayMultivitamins, setTodayMultivitamins] = useState(vitCached.today)
-  const [allTimeMultivitamins, setAllTimeMultivitamins] = useState(0)
-  const [creatineTaken, setCreatineTaken] = useState(lsCreatineLoad)
+  const [weeklyMultivitamins, setWeeklyMultivitamins] = useState(0)
+  const [todayMultivitamins, setTodayMultivitamins] = useState(0)
+  const [creatineTaken, setCreatineTaken] = useState(false)
   const [celebration, setCelebration] = useState<string | null>(null)
 
   const prevWater = useRef(0)
   const prevCalories = useRef(0)
   const prevProtein = useRef(0)
+  const userModified = useRef(false)
+  const userRef = useRef(user)
+  useEffect(() => { userRef.current = user }, [user])
+  const pendingNutrition = useRef<Record<string, unknown> | null>(null)
+  // Date this hook's data was loaded for — used to detect a midnight rollover
+  // while the PWA stays resident in memory (it never remounts on reopen).
+  const loadedDate = useRef<string>('')
 
   const fetchToday = (userId: string) =>
     supabase
       .from('daily_logs')
-      .select('water_liters, calories, protein_grams, sugar_grams')
+      .select('water_liters, calories, protein_grams, sugar_grams, creatine_taken')
       .eq('user_id', userId)
-      .eq('log_date', TODAY)
+      .eq('log_date', getToday())
       .order('log_date')
       .then(({ data: rows }) => {
         const data = rows?.length ? rows[rows.length - 1] : null
-        if (data) {
-          setState(s => ({
-            ...s,
-            waterLiters: Number(data.water_liters) || 0,
-            calories: Number(data.calories) || 0,
-            proteinGrams: Number(data.protein_grams) || 0,
-            sugarGrams: Number(data.sugar_grams) || 0,
-          }))
-        }
+        // Always reset to the DB's authoritative values for today — a missing
+        // row means a fresh day, so everything goes back to 0.
+        setState(s => ({
+          ...s,
+          waterLiters: Number(data?.water_liters) || 0,
+          calories: Number(data?.calories) || 0,
+          proteinGrams: Number(data?.protein_grams) || 0,
+          sugarGrams: Number(data?.sugar_grams) || 0,
+        }))
+        setCreatineTaken(Boolean(data?.creatine_taken))
+        // Sync celebration baselines so we don't re-fire on a fresh load.
+        prevWater.current = Number(data?.water_liters) || 0
+        prevCalories.current = Number(data?.calories) || 0
+        prevProtein.current = Number(data?.protein_grams) || 0
       })
 
-  // Load from Supabase on mount — overrides localStorage with authoritative DB values
-  useEffect(() => {
-    if (!user) { setLoaded(true); return }
-
+  const loadAll = (userId: string) => {
+    userModified.current = false
+    loadedDate.current = getToday()
     const weekStart = getWeekStart()
 
-    fetchToday(user.id).then(() => setLoaded(true))
+    const p = fetchToday(userId)
 
     supabase
       .from('daily_logs')
       .select('log_date, multivitamins')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .gte('log_date', weekStart)
       .order('log_date')
       .then(({ data }) => {
         if (!data) return
-        const lsVit = lsVitaminsLoad()
-        const lsAge = lsVit.ts ? Date.now() - lsVit.ts : Infinity
-        if (lsAge < 30000) return
-        const todayRows = data.filter(r => r.log_date === TODAY)
+        const todayRows = data.filter(r => r.log_date === getToday())
         const todayVal = todayRows.length ? todayRows[todayRows.length - 1].multivitamins ?? 0 : 0
-        const otherDays = data.filter(r => r.log_date !== TODAY)
+        const otherDays = data.filter(r => r.log_date !== getToday())
         const weekly = otherDays.reduce((s, r) => s + (r.multivitamins ?? 0), 0) + todayVal
         setWeeklyMultivitamins(weekly)
         setTodayMultivitamins(todayVal)
-        lsVitaminsSave(weekly, todayVal)
       })
 
-    supabase
-      .from('daily_logs')
-      .select('multivitamins')
-      .eq('user_id', user.id)
-      .then(({ data }) => {
-        const total = data?.reduce((s, r) => s + (r.multivitamins ?? 0), 0) ?? 0
-        setAllTimeMultivitamins(total)
-      })
+    return p
+  }
+
+  // Load from Supabase on mount
+  useEffect(() => {
+    if (!user) { setLoaded(true); return }
+    loadAll(user.id).then(() => setLoaded(true))
   }, [user])
 
-  // Auto-save to Supabase 600ms after last change — exactly like sleep
+  // Reset/reload when the app returns to the foreground on a new calendar day.
+  // The PWA stays in memory across midnight, so without this the previous day's
+  // totals carry over and get written into today's row on the next edit.
   useEffect(() => {
-    if (!loaded || !user) return
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return
+      const u = userRef.current
+      if (!u) return
+      if (getToday() !== loadedDate.current) loadAll(u.id)
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
+  }, [])
+
+  // Auto-save to Supabase 600ms after last user-initiated change (not on initial load)
+  useEffect(() => {
+    if (!loaded || !user || !userModified.current) return
     const { waterLiters, calories, proteinGrams, sugarGrams } = state
+    const fields = {
+      water_liters: waterLiters,
+      calories,
+      protein_grams: proteinGrams,
+      sugar_grams: sugarGrams,
+      multivitamins: todayMultivitamins,
+    }
+    pendingNutrition.current = fields
     const id = setTimeout(() => {
-      upsertDay(user.id, {
-        water_liters: waterLiters,
-        calories,
-        protein_grams: proteinGrams,
-        sugar_grams: sugarGrams,
-        multivitamins: todayMultivitamins,
-      })
+      upsertDay(user.id, fields)
+      pendingNutrition.current = null
     }, 600)
     return () => clearTimeout(id)
   }, [state.waterLiters, state.calories, state.proteinGrams, state.sugarGrams, todayMultivitamins, loaded, user])
 
+  // Flush any pending save when tab is switched (unmount)
+  useEffect(() => {
+    return () => {
+      if (pendingNutrition.current && userRef.current) {
+        upsertDay(userRef.current.id, pendingNutrition.current)
+      }
+    }
+  }, [])
+
   useEffect(() => { healthSnapshot.waterLiters = state.waterLiters }, [state.waterLiters])
   useEffect(() => { healthSnapshot.calories = state.calories }, [state.calories])
-
-  useEffect(() => {
-    lsSave(state.waterLiters, state.calories, state.proteinGrams, state.sugarGrams)
-  }, [state.waterLiters, state.calories, state.proteinGrams, state.sugarGrams])
 
   useEffect(() => {
     if (!celebration) return
@@ -180,31 +178,30 @@ export function useNutrition() {
   useEffect(() => {
     const prev = prevWater.current
     prevWater.current = state.waterLiters
-    if (prev < NUTRITION_LIMITS.waterTarget && state.waterLiters >= NUTRITION_LIMITS.waterTarget) {
+    if (prev < settings.waterTarget && state.waterLiters >= settings.waterTarget) {
       setCelebration('HYDRATION GOAL REACHED')
     }
-  }, [state.waterLiters])
+  }, [state.waterLiters, settings.waterTarget])
 
   useEffect(() => {
     const prev = prevCalories.current
     prevCalories.current = state.calories
-    if (prev < NUTRITION_LIMITS.caloriesTarget && state.calories >= NUTRITION_LIMITS.caloriesTarget) {
+    if (prev < settings.caloriesTarget && state.calories >= settings.caloriesTarget) {
       setCelebration('CALORIE TARGET HIT')
     }
-  }, [state.calories])
+  }, [state.calories, settings.caloriesTarget])
 
   useEffect(() => {
     const prev = prevProtein.current
     prevProtein.current = state.proteinGrams
-    if (prev < NUTRITION_LIMITS.proteinTarget && state.proteinGrams >= NUTRITION_LIMITS.proteinTarget) {
+    if (prev < settings.proteinTarget && state.proteinGrams >= settings.proteinTarget) {
       setCelebration('PROTEIN GOAL HIT')
     }
-  }, [state.proteinGrams])
+  }, [state.proteinGrams, settings.proteinTarget])
 
   const clamp = (val: number, min: number, max: number) => Math.min(max, Math.max(min, val))
 
-  const saveVitamins = (newTodayCount: number, newWeeklyCount: number) => {
-    lsVitaminsSave(newWeeklyCount, newTodayCount, true)
+  const saveVitamins = (newTodayCount: number) => {
     if (!user) return
     upsertDay(user.id, { multivitamins: newTodayCount }).catch(e => console.error('saveVitamins failed:', e))
   }
@@ -212,18 +209,22 @@ export function useNutrition() {
   const toggleCreatine = async () => {
     const next = !creatineTaken
     setCreatineTaken(next)
-    lsCreatineSave(next)
-    // creatine_taken column not yet in DB — local-only for now
+    if (user) {
+      await supabase.from('daily_logs').upsert(
+        { user_id: user.id, log_date: getToday(), creatine_taken: next, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id,log_date' }
+      )
+    }
   }
 
-  const adjustWater = (delta: number) => setState(s => ({ ...s, waterLiters: clamp(s.waterLiters + delta, 0, WATER_MAX) }))
-  const setWater = (val: number) => setState(s => ({ ...s, waterLiters: clamp(val, 0, WATER_MAX) }))
-  const adjustCalories = (delta: number) => setState(s => ({ ...s, calories: clamp(s.calories + delta, 0, CALORIES_MAX) }))
-  const setCalories = (val: number) => setState(s => ({ ...s, calories: clamp(val, 0, CALORIES_MAX) }))
-  const adjustProtein = (delta: number) => setState(s => ({ ...s, proteinGrams: clamp(s.proteinGrams + delta, 0, PROTEIN_MAX) }))
-  const setProtein = (val: number) => setState(s => ({ ...s, proteinGrams: clamp(val, 0, PROTEIN_MAX) }))
-  const adjustSugar = (delta: number) => setState(s => ({ ...s, sugarGrams: clamp(s.sugarGrams + delta, 0, SUGAR_MAX) }))
-  const setSugar = (val: number) => setState(s => ({ ...s, sugarGrams: clamp(val, 0, SUGAR_MAX) }))
+  const adjustWater = (delta: number) => { userModified.current = true; setState(s => ({ ...s, waterLiters: clamp(s.waterLiters + delta, 0, WATER_MAX) })) }
+  const setWater = (val: number) => { userModified.current = true; setState(s => ({ ...s, waterLiters: clamp(val, 0, WATER_MAX) })) }
+  const adjustCalories = (delta: number) => { userModified.current = true; setState(s => ({ ...s, calories: clamp(s.calories + delta, 0, CALORIES_MAX) })) }
+  const setCalories = (val: number) => { userModified.current = true; setState(s => ({ ...s, calories: clamp(val, 0, CALORIES_MAX) })) }
+  const adjustProtein = (delta: number) => { userModified.current = true; setState(s => ({ ...s, proteinGrams: clamp(s.proteinGrams + delta, 0, PROTEIN_MAX) })) }
+  const setProtein = (val: number) => { userModified.current = true; setState(s => ({ ...s, proteinGrams: clamp(val, 0, PROTEIN_MAX) })) }
+  const adjustSugar = (delta: number) => { userModified.current = true; setState(s => ({ ...s, sugarGrams: clamp(s.sugarGrams + delta, 0, SUGAR_MAX) })) }
+  const setSugar = (val: number) => { userModified.current = true; setState(s => ({ ...s, sugarGrams: clamp(val, 0, SUGAR_MAX) })) }
 
   const adjustMultivitamins = (delta: number) => {
     const newWeekly = Math.min(NUTRITION_LIMITS.multivitaminTarget, Math.max(0, weeklyMultivitamins + delta))
@@ -232,8 +233,7 @@ export function useNutrition() {
     const newToday = Math.max(0, todayMultivitamins + actualDelta)
     setTodayMultivitamins(newToday)
     setWeeklyMultivitamins(newWeekly)
-    setAllTimeMultivitamins(a => Math.max(0, a + actualDelta))
-    saveVitamins(newToday, newWeekly)
+    saveVitamins(newToday)
     if (actualDelta > 0 && newWeekly >= NUTRITION_LIMITS.multivitaminTarget) {
       setCelebration('SUPPLEMENT GOAL HIT')
     }
@@ -245,17 +245,13 @@ export function useNutrition() {
     const newToday = Math.max(0, todayMultivitamins + actualDelta)
     setTodayMultivitamins(newToday)
     setWeeklyMultivitamins(newWeekly)
-    setAllTimeMultivitamins(a => Math.max(0, a + actualDelta))
-    saveVitamins(newToday, newWeekly)
+    saveVitamins(newToday)
   }
-
-  const toggleMultivitamin = () => adjustMultivitamins(todayMultivitamins > 0 ? -todayMultivitamins : 1)
-  const incrementMultivitamins = () => adjustMultivitamins(1)
-  const decrementMultivitamins = () => adjustMultivitamins(-1)
 
   const simulateAIScan = () => setState(s => ({ ...s, uploadedImage: 'scanned' }))
 
   const approveScan = (water: number, calories: number, protein: number, sugar: number) => {
+    userModified.current = true
     setState(s => ({
       ...s,
       waterLiters: clamp(s.waterLiters + water, 0, WATER_MAX),
@@ -268,10 +264,17 @@ export function useNutrition() {
 
   const dismissScan = () => setState(s => ({ ...s, uploadedImage: null }))
 
+  const dynamicLimits = {
+    ...NUTRITION_LIMITS,
+    waterTarget:    settings.waterTarget,
+    caloriesTarget: settings.caloriesTarget,
+    proteinTarget:  settings.proteinTarget,
+  }
+
   return {
     state,
     loaded,
-    limits: NUTRITION_LIMITS,
+    limits: dynamicLimits,
     steps: { water: WATER_STEP, calories: CALORIES_STEP, protein: PROTEIN_STEP, sugar: SUGAR_STEP },
     maxes: { water: WATER_MAX, calories: CALORIES_MAX, protein: PROTEIN_MAX, sugar: SUGAR_MAX },
     adjustWater, setWater,
@@ -280,15 +283,8 @@ export function useNutrition() {
     adjustSugar, setSugar,
     celebration,
     weeklyMultivitamins,
-    todayMultivitamins,
-    todayVitaminTaken: todayMultivitamins > 0,
-    supplementMomentumBoost: allTimeMultivitamins * SUPPLEMENT_MOMENTUM_PER_VITAMIN,
     adjustMultivitamins,
     setMultivitamins,
-    saveVitamins,
-    toggleMultivitamin,
-    incrementMultivitamins,
-    decrementMultivitamins,
     creatineTaken,
     toggleCreatine,
     simulateAIScan, approveScan, dismissScan,
