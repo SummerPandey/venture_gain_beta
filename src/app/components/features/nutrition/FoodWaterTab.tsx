@@ -2,7 +2,8 @@ import { useState, useRef } from 'react'
 import { ChevronUp, Droplet, Beef, Flame, Candy, Plus, Minus, Pill, X, Camera, Mic, FolderOpen, MessageCircle, Send } from 'lucide-react'
 import { PixelBar } from '@/app/components/shared'
 import { useHealthData } from '@/contexts/HealthDataContext'
-import { groqText, groqVision, parseAIJson } from '@/lib/groq'
+import { groqText, parseAIJson } from '@/lib/groq'
+import { geminiVision } from '@/lib/gemini'
 
 type NutritionScan = { waterDelta?: number; caloriesDelta?: number; proteinDelta?: number; sugarDelta?: number; description?: string; servingNote?: string }
 
@@ -261,7 +262,7 @@ Rules:
         reader.onerror = reject
         reader.readAsDataURL(file)
       })
-      const raw = await groqVision(base64, file.type, `You are a nutrition expert. Look at this food image carefully.
+      const raw = await geminiVision(base64, file.type, `You are a nutrition expert. Look at this food image carefully.
 
 CRITICAL RULE — SERVING SIZE:
 - If this is a packaged product (box, bag, bottle, tin, wrapper), read the nutrition label and use EXACTLY 1 serving as defined on the label (e.g. "per 100g", "per cup", "per 2 biscuits"). Do NOT multiply by servings per container.

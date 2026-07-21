@@ -85,27 +85,6 @@ export async function groqText(prompt: string, systemPrompt?: string): Promise<s
   return data.choices?.[0]?.message?.content ?? ''
 }
 
-/** Image (base64) + text prompt → response string */
-export async function groqVision(base64: string, mimeType: string, prompt: string): Promise<string> {
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({
-      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
-          { type: 'text', text: prompt },
-        ],
-      }],
-      temperature: 0.1,
-    }),
-  })
-  const data = await res.json()
-  return data.choices?.[0]?.message?.content ?? ''
-}
-
 /** Multi-turn chat — pass full history each time.
  *  Pass a low temperature for JSON-producing prompts (e.g. workout logging);
  *  the default 0.7 suits free-form conversational replies. */

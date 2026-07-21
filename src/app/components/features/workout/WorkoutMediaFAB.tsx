@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react'
 import { Camera, Mic, FolderOpen, MessageCircle, Send, ChevronUp, X } from 'lucide-react'
-import { groqText, groqVision, groqChat, parseAIJson } from '@/lib/groq'
+import { groqText, groqChat, parseAIJson } from '@/lib/groq'
+import { geminiVision } from '@/lib/gemini'
 import { healthSnapshot } from '@/store/healthSnapshot'
 import type { WorkoutEntry, WorkoutSet } from '@/types'
 
@@ -134,7 +135,7 @@ export function WorkoutMediaFAB({ logWorkoutDirect }: Props) {
     setShowScanCard(true)
     try {
       const { base64, mimeType } = await compressImage(file)
-      const raw = await groqVision(base64, mimeType, `You are a sprint & strength coach. Analyze this workout screenshot and extract ALL exercises. Return ONLY a valid JSON array — no markdown, no explanation.
+      const raw = await geminiVision(base64, mimeType, `You are a sprint & strength coach. Analyze this workout screenshot and extract ALL exercises. Return ONLY a valid JSON array — no markdown, no explanation.
 
 [
   {

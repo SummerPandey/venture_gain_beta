@@ -3,7 +3,8 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, LineCh
 import { Dumbbell, TrendingUp, Target, Award, Activity, ChevronUp, Zap, Plus, Minus, X, Camera, Mic, FolderOpen, Check, MessageCircle, Send, Moon } from 'lucide-react'
 import { PixelBar } from '@/app/components/shared'
 import { useHealthData } from '@/contexts/HealthDataContext'
-import { groqText, groqVision, groqChat, parseAIJson } from '@/lib/groq'
+import { groqText, groqChat, parseAIJson } from '@/lib/groq'
+import { geminiVision } from '@/lib/gemini'
 import { healthSnapshot } from '@/store/healthSnapshot'
 import type { DayLog } from '@/hooks/useWorkout'
 import { CARDIO_MAX_MINUTES } from '@/constants'
@@ -253,7 +254,7 @@ Rules:
         reader.onerror = reject
         reader.readAsDataURL(file)
       })
-      const raw = await groqVision(base64, file.type, `You are a sprint & strength coach. Analyze this workout screenshot and extract ALL exercises. Return ONLY a valid JSON array — no markdown, no explanation.
+      const raw = await geminiVision(base64, file.type, `You are a sprint & strength coach. Analyze this workout screenshot and extract ALL exercises. Return ONLY a valid JSON array — no markdown, no explanation.
 
 [
   {

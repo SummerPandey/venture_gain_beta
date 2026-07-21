@@ -4,6 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 
 /**
  * Dev-only: mirror the production /api/groq serverless function so `npm run dev`
@@ -41,6 +42,43 @@ function devGroqProxy(key: string): Plugin {
   }
 }
 
+/**
+ * Dev-only: mirror the production /api/gemini serverless function so `npm run
+ * dev` keeps working. Used for vision tasks (photo scanning) since Groq no
+ * longer hosts a vision model on the free/developer tier.
+ */
+function devGeminiProxy(key: string): Plugin {
+  return {
+    name: 'dev-gemini-proxy',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/api/gemini', (req, res) => {
+        if (req.method !== 'POST') { res.statusCode = 405; res.end('Method Not Allowed'); return }
+        if (!key) { res.statusCode = 500; res.end(JSON.stringify({ error: 'GEMINI_API_KEY missing from .env.local' })); return }
+        let body = ''
+        req.on('data', chunk => { body += chunk })
+        req.on('end', async () => {
+          try {
+            const { model, ...rest } = JSON.parse(body)
+            const upstream = await fetch(`${GEMINI_BASE}/${model}:generateContent`, {
+              method: 'POST',
+              headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' },
+              body: JSON.stringify(rest),
+            })
+            const text = await upstream.text()
+            res.statusCode = upstream.status
+            res.setHeader('Content-Type', 'application/json')
+            res.end(text)
+          } catch {
+            res.statusCode = 502
+            res.end(JSON.stringify({ error: 'Upstream request to Gemini failed' }))
+          }
+        })
+      })
+    },
+  }
+}
+
 export default defineConfig(({ mode }) => {
   // empty prefix → load ALL vars (incl. non-VITE server-side secrets) for the
   // dev proxy; only VITE_* are ever exposed to client code by Vite.
@@ -50,6 +88,7 @@ export default defineConfig(({ mode }) => {
       react(),
       tailwindcss(),
       devGroqProxy(env.GROQ_API_KEY),
+      devGeminiProxy(env.GEMINI_API_KEY),
     ],
     resolve: {
       alias: {
