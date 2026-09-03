@@ -1,6 +1,8 @@
 // Calls go through our own serverless proxy (/api/groq) which holds the Groq
 // key server-side — the secret is never exposed in the client bundle.
 const GROQ_URL = '/api/groq'
+// llama-3.3-70b-versatile was removed from Groq's catalog; gpt-oss-120b is the closest replacement.
+const GROQ_MODEL = 'openai/gpt-oss-120b'
 
 function headers() {
   return { 'Content-Type': 'application/json' }
@@ -79,7 +81,7 @@ export async function groqText(prompt: string, systemPrompt?: string): Promise<s
   const res = await fetch(GROQ_URL, {
     method: 'POST',
     headers: headers(),
-    body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages, temperature: 0.1 }),
+    body: JSON.stringify({ model: GROQ_MODEL, messages, temperature: 0.1 }),
   })
   const data = await res.json()
   return data.choices?.[0]?.message?.content ?? ''
@@ -97,7 +99,7 @@ export async function groqChat(
     method: 'POST',
     headers: headers(),
     body: JSON.stringify({
-      model: 'llama-3.3-70b-versatile',
+      model: GROQ_MODEL,
       messages: [{ role: 'system', content: systemPrompt }, ...history],
       temperature: opts.temperature ?? 0.7,
     }),

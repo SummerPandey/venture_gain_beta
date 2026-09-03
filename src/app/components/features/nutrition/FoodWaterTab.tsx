@@ -118,7 +118,7 @@ export function FoodWaterTab() {
   const [scanEditing, setScanEditing] = useState(false)
   const [scanValues, setScanValues] = useState(DEFAULT_SCAN)
   const [scanLoading, setScanLoading] = useState(false)
-  const [scanError, setScanError] = useState(false)
+  const [scanError, setScanError] = useState<string | null>(null)
   const [scanDescription, setScanDescription] = useState<string | null>(null)
   const [showMediaMenu, setShowMediaMenu] = useState(false)
   const [companionMode, setCompanionMode] = useState(false)
@@ -131,7 +131,7 @@ export function FoodWaterTab() {
     setScanValues(DEFAULT_SCAN)
     setScanEditing(false)
     setScanDescription(null)
-    setScanError(false)
+    setScanError(null)
   }
 
   const handleCameraPress = () => {
@@ -173,12 +173,12 @@ export function FoodWaterTab() {
         })
         setScanDescription(parsed.description ?? transcript)
       } catch {
-        setScanError(true)
+        setScanError("Couldn't estimate that — try rephrasing or typing it instead")
       } finally {
         setScanLoading(false)
       }
     }
-    recognition.onerror = () => { setScanLoading(false); setScanError(true) }
+    recognition.onerror = () => { setScanLoading(false); setScanError("Couldn't hear that — try again") }
     recognition.start()
   }
 
@@ -239,7 +239,7 @@ Rules:
       })
       setScanDescription(parsed.description ?? input)
     } catch {
-      setScanError(true)
+      setScanError("Couldn't estimate that — try rephrasing")
     } finally {
       setScanLoading(false)
       setCompanionLoading(false)
@@ -254,14 +254,14 @@ Rules:
       const img = new Image()
       const url = URL.createObjectURL(file)
       img.onload = () => {
-        const MAX = 1024
+        const MAX = 1536
         const scale = Math.min(1, MAX / Math.max(img.width, img.height))
         const canvas = document.createElement('canvas')
         canvas.width = Math.round(img.width * scale)
         canvas.height = Math.round(img.height * scale)
         canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height)
         URL.revokeObjectURL(url)
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.82)
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.9)
         resolve({ base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' })
       }
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image load failed')) }
@@ -305,7 +305,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
       const note = parsed.servingNote ? ` · ${parsed.servingNote}` : ''
       setScanDescription(desc ? `${desc}${note}` : null)
     } catch {
-      setScanError(true)
+      setScanError('Could not read this image')
     } finally {
       setScanLoading(false)
     }
@@ -381,8 +381,10 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
           ) : scanError ? (
             /* Error state */
             <div className="flex flex-col items-center justify-center py-6 gap-3">
-              <div className="monument-text" style={{ color: '#D32F2F', fontSize: '11px', fontWeight: '700' }}>Could not read this image</div>
-              <div className="monument-text text-center" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>Try a clearer photo or describe your food with the AI Companion</div>
+              <div className="monument-text" style={{ color: '#D32F2F', fontSize: '11px', fontWeight: '700' }}>{scanError}</div>
+              <div className="monument-text text-center" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>
+                {scanError === 'Could not read this image' ? 'Try a clearer photo or describe your food with the AI Companion' : 'Give it another try'}
+              </div>
               <button onClick={dismissScan} className="monument-button px-4 py-2" style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '9px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>DISMISS</button>
             </div>
           ) : scanEditing ? (

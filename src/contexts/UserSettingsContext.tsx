@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from './AuthContext'
+import type { WeightUnit } from '@/types'
 
 export interface UserSettings {
   waterTarget: number
@@ -11,6 +12,7 @@ export interface UserSettings {
   heightCm: number
   streakDays: number
   avatar: string
+  defaultWeightUnit: WeightUnit
 }
 
 export const DEFAULT_SETTINGS: UserSettings = {
@@ -22,6 +24,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   heightCm: 175,
   streakDays: 0,
   avatar: 'chimchar',
+  defaultWeightUnit: 'kg',
 }
 
 export const AVATAR_SPRITES: Record<string, string> = {
@@ -36,6 +39,7 @@ interface UserSettingsContextValue {
   loaded: boolean
   isNewUser: boolean
   saveSettings: (next: UserSettings) => Promise<void>
+  setDefaultWeightUnit: (unit: WeightUnit) => void
 }
 
 const UserSettingsContext = createContext<UserSettingsContextValue | null>(null)
@@ -71,7 +75,8 @@ export function UserSettingsProvider({ children }: { children: ReactNode }) {
       .maybeSingle()
       .then(({ data }) => {
         if (data) {
-          setSettings({
+          setSettings(prev => ({
+            ...prev,
             waterTarget:    Number(data.water_target)    || DEFAULT_SETTINGS.waterTarget,
             caloriesTarget: Number(data.calories_target) || DEFAULT_SETTINGS.caloriesTarget,
             proteinTarget:  Number(data.protein_target)  || DEFAULT_SETTINGS.proteinTarget,
@@ -80,7 +85,7 @@ export function UserSettingsProvider({ children }: { children: ReactNode }) {
             heightCm:       Number(data.height_cm)       || DEFAULT_SETTINGS.heightCm,
             streakDays:     Number(data.streak_days)     || 0,
             avatar:         data.avatar                  ?? DEFAULT_SETTINGS.avatar,
-          })
+          }))
           // Profile exists — mark as seen so onboarding never fires again
           localStorage.setItem(seenKey, '1')
           setIsNewUser(false)
@@ -110,8 +115,34 @@ export function UserSettingsProvider({ children }: { children: ReactNode }) {
       .upsert(buildRow(user.id, next), { onConflict: 'user_id' })
   }
 
+  // Separate query so a missing `default_weight_unit` column can't break the main settings load
+  useEffect(() => {
+    if (!user) return
+    supabase
+      .from('user_profiles')
+      .select('default_weight_unit')
+      .eq('user_id', user.id)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (error || !data?.default_weight_unit) return
+        setSettings(prev => ({ ...prev, defaultWeightUnit: data.default_weight_unit as WeightUnit }))
+      })
+  }, [user])
+
+  const setDefaultWeightUnit = (unit: WeightUnit) => {
+    setSettings(prev => ({ ...prev, defaultWeightUnit: unit }))
+    if (!user) return
+    supabase
+      .from('user_profiles')
+      .upsert(
+        { user_id: user.id, default_weight_unit: unit, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id' }
+      )
+      .then(({ error }) => { if (error) console.error('[settings] weight unit save failed:', error) })
+  }
+
   return (
-    <UserSettingsContext.Provider value={{ settings, loaded, isNewUser, saveSettings }}>
+    <UserSettingsContext.Provider value={{ settings, loaded, isNewUser, saveSettings, setDefaultWeightUnit }}>
       {children}
     </UserSettingsContext.Provider>
   )

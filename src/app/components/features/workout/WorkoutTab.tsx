@@ -9,14 +9,15 @@ import { healthSnapshot } from '@/store/healthSnapshot'
 import type { DayLog } from '@/hooks/useWorkout'
 import { CARDIO_MAX_MINUTES } from '@/constants'
 import { TRAINING_CATEGORIES } from '@/constants/trainingCategories'
-import type { ExerciseProgress, WorkoutSet, WorkoutEntry } from '@/types'
+import type { ExerciseProgress, WorkoutSet, WorkoutEntry, WeightUnit } from '@/types'
+import { toggleKgLbs, unitLabel, toKgValue } from '@/lib/units'
 
 interface WorkoutScan {
   exercise: string
   type: 'weights' | 'energy'
   sets: WorkoutSet[]
   energyRating: number
-  unit: string
+  unit: WeightUnit
 }
 
 interface CoachMessage {
@@ -32,6 +33,19 @@ const DEFAULT_WORKOUT_SCAN: WorkoutScan = {
   unit: 'kg',
 }
 
+const VOICE_WORKOUT_PROMPT = (transcript: string) => `The user gave this voice transcript while logging a workout: "${transcript}". Extract EVERY exercise mentioned — don't drop any reps or weights they said. Return ONLY a valid JSON array (no markdown, no explanation):
+[{"exercise":"<name, properly capitalised>","type":"<'weights' if sets/reps/weight were mentioned, 'energy' if cardio or general effort>","sets":[{"reps":<number>,"weight":<number, 0 if bodyweight or not mentioned>}, ...],"energyRating":<1-5 only when type is 'energy', else null>,"unit":"<'kg' or 'lbs' — whichever they said, default 'kg'>","description":"<2-5 word summary>"}]
+Rules:
+- One item per distinct exercise, even if mentioned in the same breath ("bench then squats" → 2 items)
+- "X sets of Y" → expand into X separate {reps: Y} entries
+- Keep the weight for every set — if one weight was given for all sets, repeat it; if per-set weights differ, use those
+Examples:
+- "calf raises three sets of twelve" → [{"exercise":"Calf Raises","type":"weights","sets":[{"reps":12,"weight":0},{"reps":12,"weight":0},{"reps":12,"weight":0}],"unit":"kg","description":"Calf Raises 3x12"}]
+- "bench press four sets of eight at 80 kg" → [{"exercise":"Bench Press","type":"weights","sets":[{"reps":8,"weight":80},{"reps":8,"weight":80},{"reps":8,"weight":80},{"reps":8,"weight":80}],"unit":"kg","description":"Bench Press 4x8 @80kg"}]
+- "squats three sets of five at 225 pounds" → [{"exercise":"Squats","type":"weights","sets":[{"reps":5,"weight":225},{"reps":5,"weight":225},{"reps":5,"weight":225}],"unit":"lbs","description":"Squats 3x5 @225lbs"}]
+- "then I did pull-ups three sets of ten bodyweight" → [{"exercise":"Pull-ups","type":"weights","sets":[{"reps":10,"weight":0},{"reps":10,"weight":0},{"reps":10,"weight":0}],"unit":"kg","description":"Pull-ups 3x10"}]
+- "went for a run felt great" → [{"exercise":"Running","type":"energy","sets":[],"energyRating":4,"unit":"kg","description":"Running"}]`
+
 const EXERCISE_GOALS: Pick<ExerciseProgress, 'exercise' | 'goal' | 'icon' | 'unit'>[] = [
   { exercise: 'Bench Press', goal: 102, icon: Dumbbell, unit: 'kg' },
   { exercise: 'Squats',      goal: 125, icon: TrendingUp, unit: 'kg' },
@@ -43,7 +57,7 @@ const EXERCISE_GOALS: Pick<ExerciseProgress, 'exercise' | 'goal' | 'icon' | 'uni
 function dayVolume(workouts: DayLog['workouts']): number {
   return workouts.reduce((sum, w) => {
     if (w.type === 'weights' && w.sets) {
-      return sum + w.sets.reduce((s, set) => s + set.reps * set.weight, 0)
+      return sum + w.sets.reduce((s, set) => s + set.reps * toKgValue(set.weight, w.unit), 0)
     }
     return sum + (w.energyRating ?? 0) * 15
   }, 0)
@@ -61,6 +75,7 @@ export function WorkoutTab({ onEnterWorkoutMode }: { onEnterWorkoutMode?: () => 
     trackingMode, setTrackingMode,
     energyRating, setEnergyRating,
     sets, todayWorkouts,
+    unit, setUnit,
     showExerciseSelection, setShowExerciseSelection,
     historicalLogs,
     celebration,
@@ -109,7 +124,7 @@ export function WorkoutTab({ onEnterWorkoutMode }: { onEnterWorkoutMode?: () => 
       type: w.type === 'energy' ? 'energy' : 'weights',
       sets: w.sets && w.sets.length > 0 ? w.sets : [{ reps: 0, weight: 0 }],
       energyRating: w.energyRating ?? 3,
-      unit: 'kg',
+      unit: w.unit ?? 'kg',
     })
     setEditingWorkoutIdx(idx)
   }
@@ -146,6 +161,7 @@ export function WorkoutTab({ onEnterWorkoutMode }: { onEnterWorkoutMode?: () => 
     // Capture before logWorkout clears state
     const exerciseName = selectedExercise
     const capturedSets = trackingMode === 'weights' ? sets.map(s => ({ ...s })) : null
+    const capturedUnit = trackingMode === 'weights' ? unit : 'kg'
     const capturedEnergy = trackingMode === 'energy' ? energyRating : null
 
     logWorkout(category)   // fast, instant — clears selectedExercise etc.
@@ -158,27 +174,27 @@ export function WorkoutTab({ onEnterWorkoutMode }: { onEnterWorkoutMode?: () => 
       const exerciseHistory = historicalLogs
         .flatMap(d => d.workouts
           .filter(w => w.exercise === exerciseName)
-          .map(w => ({ date: d.date, sets: w.sets, energy: w.energyRating }))
+          .map(w => ({ date: d.date, sets: w.sets, energy: w.energyRating, unit: w.unit }))
         )
         .slice(-3)
 
       const histStr = exerciseHistory.length > 0
         ? exerciseHistory.map(h =>
             h.sets?.length
-              ? `${h.date}: ${h.sets.map(s => `${s.reps}×${s.weight}kg`).join(', ')}`
+              ? `${h.date}: ${h.sets.map(s => `${s.reps}×${s.weight}${unitLabel(h.unit).toLowerCase()}`).join(', ')}`
               : `${h.date}: E${h.energy}/5`
           ).join(' | ')
         : 'first time logging'
 
       const todayStr = capturedSets?.length
-        ? capturedSets.map(s => `${s.reps}×${s.weight}kg`).join(', ')
+        ? capturedSets.map(s => `${s.reps}×${s.weight}${unitLabel(capturedUnit).toLowerCase()}`).join(', ')
         : `${capturedEnergy}/5 effort`
 
-      // PR detection (no AI needed)
+      // PR detection (no AI needed) — compare in kg so lbs/kg entries are comparable
       let isPR = false
       if (capturedSets?.length && exerciseHistory.length > 0) {
-        const todayMax = Math.max(...capturedSets.map(s => s.weight))
-        const histMax = Math.max(...exerciseHistory.flatMap(h => (h.sets ?? []).map(s => s.weight)), 0)
+        const todayMax = Math.max(...capturedSets.map(s => toKgValue(s.weight, capturedUnit)))
+        const histMax = Math.max(...exerciseHistory.flatMap(h => (h.sets ?? []).map(s => toKgValue(s.weight, h.unit))), 0)
         isPR = todayMax > histMax && histMax > 0
       }
 
@@ -210,8 +226,8 @@ Rules:
       // Still show PR if we detected one without AI
       const exerciseHistory = historicalLogs.flatMap(d => d.workouts.filter(w => w.exercise === exerciseName))
       if (capturedSets?.length && exerciseHistory.length > 0) {
-        const todayMax = Math.max(...capturedSets.map(s => s.weight))
-        const histMax = Math.max(...exerciseHistory.flatMap(w => (w.sets ?? []).map(s => s.weight)), 0)
+        const todayMax = Math.max(...capturedSets.map(s => toKgValue(s.weight, capturedUnit)))
+        const histMax = Math.max(...exerciseHistory.flatMap(w => (w.sets ?? []).map(s => toKgValue(s.weight, w.unit))), 0)
         if (todayMax > histMax && histMax > 0) {
           setAiPerf({ verdict: 'NEW PR 🔥', score: 5, bonus: 10 })
           adjustWorkoutLevel(10)
@@ -227,6 +243,7 @@ Rules:
   const filesInputRef = useRef<HTMLInputElement>(null)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null)
+  const transcriptRef = useRef('')
 
   const handleCameraPress = () => {
     setShowMediaMenu(false)
@@ -244,14 +261,14 @@ Rules:
       const img = new Image()
       const url = URL.createObjectURL(file)
       img.onload = () => {
-        const MAX = 1024
+        const MAX = 1536
         const scale = Math.min(1, MAX / Math.max(img.width, img.height))
         const canvas = document.createElement('canvas')
         canvas.width = Math.round(img.width * scale)
         canvas.height = Math.round(img.height * scale)
         canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height)
         URL.revokeObjectURL(url)
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.82)
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.9)
         resolve({ base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' })
       }
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image load failed')) }
@@ -300,7 +317,7 @@ Rules:
           ? (p.sets as { reps?: number; weight?: number }[]).map(s => ({ reps: s.reps ?? 0, weight: s.weight ?? 0 }))
           : [{ reps: 0, weight: 0 }],
         energyRating: typeof p.energyRating === 'number' ? p.energyRating : 3,
-        unit: typeof p.unit === 'string' ? p.unit : 'kg',
+        unit: (typeof p.unit === 'string' ? p.unit : 'kg') as WeightUnit,
       })))
       setScanDescription(items.map((p: Record<string, unknown>) => p.description).filter(Boolean).join(' · ') || null)
     } catch {
@@ -321,32 +338,36 @@ Rules:
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const recognition = new SpeechRecognition() as any
     recognition.lang = 'en-US'
-    recognition.interimResults = false
-    recognition.continuous = false
+    // continuous + interim results so the mic keeps listening through pauses —
+    // lets the user dictate multiple exercises with full sets/reps/weight,
+    // instead of cutting off after the first short utterance.
+    recognition.interimResults = true
+    recognition.continuous = true
     recognition.maxAlternatives = 1
     recognitionRef.current = recognition
+    transcriptRef.current = ''
 
-    recognition.onresult = async (event: any) => {
-      const transcript: string = event.results[0][0].transcript
+    recognition.onresult = (event: any) => {
+      let combined = ''
+      for (let i = 0; i < event.results.length; i++) {
+        combined += event.results[i][0].transcript
+      }
+      transcriptRef.current = combined.trim()
+    }
+
+    recognition.onerror = () => { setMicRecording(false); setMicReady(false) }
+
+    recognition.onend = async () => {
       setMicRecording(false)
       setMicReady(false)
+      const transcript = transcriptRef.current.trim()
+      if (!transcript) return
       setShowMediaMenu(false)
       setScanLoading(true)
       setScanDescription(`"${transcript}"`)
       simulateScreenshot()
       try {
-        const raw = await groqText(`The user said: "${transcript}". They are logging a workout. Extract the exercise name, sets, reps, and weight. Return ONLY a valid JSON object (no markdown, no explanation):
-{
-  "exercise": "<exercise name, properly capitalised>",
-  "type": "<'weights' if they mentioned sets/reps/weight, 'energy' if cardio or general effort>",
-  "sets": [{"reps": <number>, "weight": <kg, 0 if bodyweight or not mentioned>}, ...],
-  "energyRating": <1-5 only when type is 'energy', else null>,
-  "description": "<2-5 word summary>"
-}
-Examples:
-- "calf raises three sets of twelve" → exercise:"Calf Raises", type:"weights", sets:[{reps:12,weight:0},{reps:12,weight:0},{reps:12,weight:0}]
-- "bench press four sets of eight at 80 kg" → exercise:"Bench Press", type:"weights", sets:[{reps:8,weight:80},{reps:8,weight:80},{reps:8,weight:80},{reps:8,weight:80}]
-- "went for a run felt great" → exercise:"Running", type:"energy", energyRating:4`)
+        const raw = await groqText(VOICE_WORKOUT_PROMPT(transcript))
         const parsedRaw = parseAIJson(raw)
         if (parsedRaw == null) throw new Error('Could not parse AI response')
         const items = Array.isArray(parsedRaw) ? parsedRaw : [parsedRaw]
@@ -357,17 +378,15 @@ Examples:
             ? (p.sets as { reps?: number; weight?: number }[]).map(s => ({ reps: s.reps ?? 0, weight: s.weight ?? 0 }))
             : [{ reps: 0, weight: 0 }],
           energyRating: typeof p.energyRating === 'number' ? p.energyRating : 3,
-          unit: typeof p.unit === 'string' ? p.unit : 'kg',
+          unit: (typeof p.unit === 'string' ? p.unit : 'kg') as WeightUnit,
         })))
-        setScanDescription(items.map((p: Record<string, unknown>) => p.description).filter(Boolean).join(' · ') || null)
+        setScanDescription(items.map((p: Record<string, unknown>) => p.description).filter(Boolean).join(' · ') || `"${transcript}"`)
       } catch {
         setScanDescription('Could not parse — edit manually')
       } finally {
         setScanLoading(false)
       }
     }
-    recognition.onerror = () => { setMicRecording(false); setMicReady(false) }
-    recognition.onend = () => setMicRecording(false)
     setMicReady(true)
   }
 
@@ -419,7 +438,7 @@ Rules:
           ? (p.sets as { reps?: number; weight?: number }[]).map(s => ({ reps: s.reps ?? 0, weight: s.weight ?? 0 }))
           : [{ reps: 0, weight: 0 }],
         energyRating: typeof p.energyRating === 'number' ? p.energyRating : 3,
-        unit: typeof p.unit === 'string' ? p.unit : 'kg',
+        unit: (typeof p.unit === 'string' ? p.unit : 'kg') as WeightUnit,
       })))
       setScanDescription(items.map((p: Record<string, unknown>) => p.description).filter(Boolean).join(' · ') || null)
     } catch {
@@ -475,7 +494,7 @@ For all other messages just reply as plain text.`
     // energy mode: use weight field as per-set energy rating; fall back to energyRating
     ...(sv.type === 'energy'
       ? { energyRating: sv.sets[0]?.weight || sv.energyRating }
-      : { sets: sv.sets }),
+      : { sets: sv.sets, unit: sv.unit }),
   })
 
   const handleLogOne = async (idx: number) => {
@@ -516,7 +535,7 @@ For all other messages just reply as plain text.`
           const sessions = d.workouts.filter(w => w.exercise === g.exercise)
           let val = 0
           for (const w of sessions) {
-            if (w.type === 'weights' && w.sets) val = Math.max(val, ...w.sets.map(s => s.weight))
+            if (w.type === 'weights' && w.sets) val = Math.max(val, ...w.sets.map(s => toKgValue(s.weight, w.unit)))
             if (w.type === 'energy' && w.energyRating) val = Math.max(val, w.energyRating)
           }
           return { day: d.dayLabel, value: val }
@@ -525,7 +544,6 @@ For all other messages just reply as plain text.`
     return result
   }, [historicalLogs])
 
-  const selectedUnit = EXERCISE_GOALS.find(w => w.exercise === selectedExercise)?.unit ?? ''
   const hasVolumeData = weeklyVolumeData.some(d => d.volume > 0)
 
   return (
@@ -735,8 +753,9 @@ For all other messages just reply as plain text.`
               const accentBorder = cat?.border ?? '#CC7040'
               const accentShadow = cat?.shadow ?? 'rgba(255,159,102,0.2)'
               const isWeights = w.type === 'weights' && w.sets && w.sets.length > 0
-              const totalVol = isWeights
-                ? w.sets!.reduce((s, set) => s + set.reps * set.weight, 0)
+              // Distance entries (km) aren't a weight — they don't contribute to volume
+              const totalVol = isWeights && w.unit !== 'km'
+                ? w.sets!.reduce((s, set) => s + set.reps * toKgValue(set.weight, w.unit), 0)
                 : 0
               return (
                 <div key={i} style={{
@@ -789,7 +808,7 @@ For all other messages just reply as plain text.`
                             fontSize: '10px',
                             fontWeight: '700',
                           }}>
-                            {s.reps}<span style={{ color: '#A0725A', fontWeight: '600' }}>r</span> × {s.weight}<span style={{ color: '#A0725A', fontWeight: '600' }}>kg</span>
+                            {s.reps}<span style={{ color: '#A0725A', fontWeight: '600' }}>r</span> × {s.weight}<span style={{ color: '#A0725A', fontWeight: '600' }}>{unitLabel(w.unit).toLowerCase()}</span>
                           </span>
                         ))}
                       </div>
@@ -1019,6 +1038,16 @@ For all other messages just reply as plain text.`
               </div>
             ) : (
               <div className="mb-4">
+                <div className="flex items-center justify-end gap-2 mb-2">
+                  <span className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>UNIT</span>
+                  <button
+                    onClick={() => setUnit(toggleKgLbs(unit))}
+                    className="monument-button px-3 py-1"
+                    style={{ background: 'rgba(255, 252, 248, 0.95)', borderRadius: '8px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}
+                  >
+                    {unitLabel(unit)}
+                  </button>
+                </div>
                 {sets.map((set, i) => (
                   <div key={i} className="grid grid-cols-3 gap-2 mb-3">
                     <div>
@@ -1037,7 +1066,7 @@ For all other messages just reply as plain text.`
                       />
                     </div>
                     <div>
-                      <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>{selectedUnit}</label>
+                      <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>{unitLabel(unit)}</label>
                       <input
                         type="number" inputMode="decimal" min={0}
                         value={set.weight === 0 ? '' : set.weight}
@@ -1129,6 +1158,7 @@ For all other messages just reply as plain text.`
         const ed = editingWorkoutData
         const dismiss = () => { setEditingWorkoutIdx(null); setEditingWorkoutData(null) }
         const updateSets = (newSets: WorkoutSet[]) => setEditingWorkoutData(prev => prev ? { ...prev, sets: newSets } : prev)
+        const cycleEditUnit = () => setEditingWorkoutData(prev => prev ? { ...prev, unit: toggleKgLbs(prev.unit) } : prev)
 
         const handleSave = async () => {
           const entry: WorkoutEntry = {
@@ -1136,6 +1166,7 @@ For all other messages just reply as plain text.`
             type: 'weights',
             time: todayWorkouts[editingWorkoutIdx]?.time ?? new Date().toLocaleTimeString(),
             sets: ed.sets,
+            unit: ed.unit,
             energyRating: ed.energyRating ?? 3,
           }
           const idx = editingWorkoutIdx
@@ -1156,11 +1187,18 @@ For all other messages just reply as plain text.`
                 <div className="monument-text" style={{ color: '#6B4423', fontSize: '15px', fontWeight: '700', letterSpacing: '0.5px' }}>
                   EDIT {ed.exercise.toUpperCase()}
                 </div>
-                <button onClick={dismiss}
-                  className="monument-button"
-                  style={{ width: 40, height: 40, borderRadius: '12px', background: 'linear-gradient(135deg,#FF9F66,#FFB88A)', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '18px', fontWeight: '700', boxShadow: '0 3px 0 rgba(139,90,62,0.25)' }}>
-                  ×
-                </button>
+                <div className="flex items-center gap-2">
+                  <button onClick={cycleEditUnit}
+                    className="monument-button px-3"
+                    style={{ height: 40, background: 'rgba(255,252,248,0.95)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '11px', fontWeight: '700' }}>
+                    {unitLabel(ed.unit)}
+                  </button>
+                  <button onClick={dismiss}
+                    className="monument-button"
+                    style={{ width: 40, height: 40, borderRadius: '12px', background: 'linear-gradient(135deg,#FF9F66,#FFB88A)', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '18px', fontWeight: '700', boxShadow: '0 3px 0 rgba(139,90,62,0.25)' }}>
+                    ×
+                  </button>
+                </div>
               </div>
 
               {/* Scrollable area — sets + energy, always both */}
@@ -1181,7 +1219,7 @@ For all other messages just reply as plain text.`
                       />
                     </div>
                     <div className="flex-1">
-                      <div className="monument-text mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px' }}>WEIGHT (KG)</div>
+                      <div className="monument-text mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px' }}>WEIGHT ({unitLabel(ed.unit)})</div>
                       <input
                         type="number" inputMode="decimal" min={0} placeholder="0"
                         value={s.weight === 0 ? '' : s.weight}
@@ -1519,6 +1557,20 @@ For all other messages just reply as plain text.`
                 ))}
               </div>
 
+              {/* Unit toggle */}
+              {sv.type === 'weights' && (
+                <div className="flex items-center justify-end gap-2 mb-3 flex-shrink-0">
+                  <span className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>UNIT</span>
+                  <button
+                    onClick={() => update({ unit: toggleKgLbs(sv.unit) })}
+                    className="monument-button px-3 py-1"
+                    style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '8px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}
+                  >
+                    {unitLabel(sv.unit)}
+                  </button>
+                </div>
+              )}
+
               {/* Content — scrolls only if many sets */}
               <div className="flex-1 overflow-y-auto" style={{ minHeight: 0 }}>
                 {sv.type === 'weights' ? (
@@ -1552,7 +1604,7 @@ For all other messages just reply as plain text.`
                             />
                           </div>
                           <div>
-                            <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>{(sv.unit || 'KG').toUpperCase()}</label>
+                            <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>{unitLabel(sv.unit)}</label>
                             <input
                               type="number" inputMode="decimal" min={0}
                               placeholder="0"
@@ -1724,7 +1776,7 @@ For all other messages just reply as plain text.`
                                       exercise: w.exercise,
                                       type: w.type,
                                       time: new Date().toLocaleTimeString(),
-                                      ...(w.type === 'energy' ? { energyRating: w.energyRating } : { sets: w.sets }),
+                                      ...(w.type === 'energy' ? { energyRating: w.energyRating } : { sets: w.sets, unit: w.unit }),
                                     }
                                     logWorkoutDirect(entry)
                                     setCoachMessages(prev => [...prev, { text: `✓ Logged ${w.exercise}`, isUser: false }])

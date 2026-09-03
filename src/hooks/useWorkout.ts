@@ -1,10 +1,35 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
-import type { WorkoutEntry, WorkoutSet, TrackingMode } from '@/types'
+import type { WorkoutEntry, WorkoutSet, TrackingMode, WeightUnit } from '@/types'
 import { CARDIO_MAX_MINUTES, WORKOUT_LEVEL_LOG_BOOST } from '@/constants'
 import { healthSnapshot } from '@/store/healthSnapshot'
 import { supabase, getToday } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { useUserSettings } from '@/contexts/UserSettingsContext'
+
+const WORKOUT_DRAFT_KEY = 'venturegain:workoutDraft'
+
+interface WorkoutDraft {
+  date: string
+  selectedExercise: string | null
+  trackingMode: TrackingMode
+  energyRating: number
+  sets: WorkoutSet[]
+  unit: WeightUnit
+}
+
+/** Reads the in-progress (not-yet-logged) exercise draft, so backgrounding the
+ *  PWA — which iOS/Android can reclaim mid-session, wiping React state — doesn't
+ *  lose reps/weight the user already typed. Ignored once the calendar day rolls over. */
+function readWorkoutDraft(): WorkoutDraft | null {
+  try {
+    const raw = localStorage.getItem(WORKOUT_DRAFT_KEY)
+    if (!raw) return null
+    const draft = JSON.parse(raw) as WorkoutDraft
+    return draft.date === getToday() ? draft : null
+  } catch {
+    return null
+  }
+}
 
 /** Local date string for week start (Saturday), using local time — no UTC drift */
 function getWeekStart(): string {
@@ -52,16 +77,31 @@ export interface DayLog {
 
 export function useWorkout() {
   const { user } = useAuth()
-  const { settings } = useUserSettings()
+  const { settings, setDefaultWeightUnit } = useUserSettings()
   const [workoutLevel, setWorkoutLevel] = useState(0)
   const [energyLevel, setEnergyLevel] = useState(0)
   const [cardioMinutes, setCardioMinutes] = useState(0)
   const [todayWorkouts, setTodayWorkouts] = useState<WorkoutEntry[]>([])
   const [uploadedImage, setUploadedImage] = useState<string | null>(null)
-  const [selectedExercise, setSelectedExercise] = useState<string | null>(null)
-  const [trackingMode, setTrackingMode] = useState<TrackingMode>('energy')
-  const [energyRating, setEnergyRating] = useState(3)
-  const [sets, setSets] = useState<WorkoutSet[]>([{ reps: 0, weight: 0 }])
+  const [initialDraft] = useState(() => readWorkoutDraft())
+  const [selectedExercise, setSelectedExercise] = useState<string | null>(initialDraft?.selectedExercise ?? null)
+  const [trackingMode, setTrackingMode] = useState<TrackingMode>(initialDraft?.trackingMode ?? 'energy')
+  const [energyRating, setEnergyRating] = useState(initialDraft?.energyRating ?? 3)
+  const [sets, setSets] = useState<WorkoutSet[]>(initialDraft?.sets ?? [{ reps: 0, weight: 0 }])
+  const [unit, setUnitState] = useState<WeightUnit>(initialDraft?.unit ?? settings.defaultWeightUnit)
+  // Seed from the saved default whenever it changes (e.g. loads in after mount) —
+  // scoped to the primitive value so it doesn't re-fire on unrelated settings edits.
+  // Skipped when a restored draft already picked a unit, so settings loading in
+  // async after mount can't clobber the in-progress exercise's unit choice.
+  useEffect(() => {
+    if (initialDraft?.selectedExercise) return
+    setUnitState(settings.defaultWeightUnit)
+  }, [settings.defaultWeightUnit, initialDraft])
+  /** Changing the unit while logging also remembers it as the new default for next time. */
+  const setUnit = (u: WeightUnit) => {
+    setUnitState(u)
+    setDefaultWeightUnit(u)
+  }
   const [showExerciseSelection, setShowExerciseSelection] = useState(false)
   const [scheduledTime, setScheduledTimeState] = useState<string | null>(null)
   const [scheduledCategories, setScheduledCategoriesState] = useState<string[]>([])
@@ -232,6 +272,17 @@ export function useWorkout() {
   useEffect(() => { healthSnapshot.workoutLevel = workoutLevel }, [workoutLevel])
   useEffect(() => { healthSnapshot.energyLevel = energyLevel }, [energyLevel])
 
+  // Mirror the in-progress (not-yet-logged) exercise to localStorage so it survives
+  // the PWA getting backgrounded and reclaimed mid-session — see readWorkoutDraft().
+  useEffect(() => {
+    if (!selectedExercise) {
+      try { localStorage.removeItem(WORKOUT_DRAFT_KEY) } catch { /* private mode etc — draft persistence is best-effort */ }
+      return
+    }
+    const draft: WorkoutDraft = { date: getToday(), selectedExercise, trackingMode, energyRating, sets, unit }
+    try { localStorage.setItem(WORKOUT_DRAFT_KEY, JSON.stringify(draft)) } catch { /* private mode etc — draft persistence is best-effort */ }
+  }, [selectedExercise, trackingMode, energyRating, sets, unit])
+
   // Auto-save 2s after last dirty change
   useEffect(() => {
     if (!loaded || !user || !isDirty) return
@@ -306,7 +357,7 @@ export function useWorkout() {
       exercise: selectedExercise,
       type: trackingMode,
       time: new Date().toLocaleTimeString(),
-      ...(trackingMode === 'energy' ? { energyRating } : { sets }),
+      ...(trackingMode === 'energy' ? { energyRating } : { sets, unit }),
       ...(resolvedCategory ? { category: resolvedCategory } : {}),
     }
     setTodayWorkouts(prev => [...prev, entry])
@@ -429,6 +480,7 @@ export function useWorkout() {
     trackingMode, setTrackingMode,
     energyRating, setEnergyRating,
     sets, todayWorkouts,
+    unit, setUnit,
     showExerciseSelection, setShowExerciseSelection,
     scheduledTime, setScheduledTime,
     scheduledCategories, toggleScheduledCategory,

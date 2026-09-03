@@ -3,14 +3,15 @@ import { Camera, Mic, FolderOpen, MessageCircle, Send, ChevronUp, X } from 'luci
 import { groqText, groqChat, parseAIJson } from '@/lib/groq'
 import { geminiVision } from '@/lib/gemini'
 import { healthSnapshot } from '@/store/healthSnapshot'
-import type { WorkoutEntry, WorkoutSet } from '@/types'
+import type { WorkoutEntry, WorkoutSet, WeightUnit } from '@/types'
+import { toggleKgLbs, unitLabel } from '@/lib/units'
 
 interface WorkoutScan {
   exercise: string
   type: 'weights' | 'energy'
   sets: WorkoutSet[]
   energyRating: number
-  unit: string
+  unit: WeightUnit
   description?: string
 }
 
@@ -27,6 +28,19 @@ const DEFAULT_WORKOUT_SCAN: WorkoutScan = {
   energyRating: 3,
   unit: 'kg',
 }
+
+const VOICE_WORKOUT_PROMPT = (transcript: string) => `The user gave this voice transcript while logging a workout: "${transcript}". Extract EVERY exercise mentioned — don't drop any reps or weights they said. Return ONLY a valid JSON array (no markdown, no explanation):
+[{"exercise":"<name, properly capitalised>","type":"<'weights' if sets/reps/weight were mentioned, 'energy' if cardio or general effort>","sets":[{"reps":<number>,"weight":<number, 0 if bodyweight or not mentioned>}, ...],"energyRating":<1-5 only when type is 'energy', else null>,"unit":"<'kg' or 'lbs' — whichever they said, default 'kg'>","description":"<2-5 word summary>"}]
+Rules:
+- One item per distinct exercise, even if mentioned in the same breath ("bench then squats" → 2 items)
+- "X sets of Y" → expand into X separate {reps: Y} entries
+- Keep the weight for every set — if one weight was given for all sets, repeat it; if per-set weights differ, use those
+Examples:
+- "calf raises three sets of twelve" → [{"exercise":"Calf Raises","type":"weights","sets":[{"reps":12,"weight":0},{"reps":12,"weight":0},{"reps":12,"weight":0}],"unit":"kg","description":"Calf Raises 3x12"}]
+- "bench press four sets of eight at 80 kg" → [{"exercise":"Bench Press","type":"weights","sets":[{"reps":8,"weight":80},{"reps":8,"weight":80},{"reps":8,"weight":80},{"reps":8,"weight":80}],"unit":"kg","description":"Bench Press 4x8 @80kg"}]
+- "squats three sets of five at 225 pounds" → [{"exercise":"Squats","type":"weights","sets":[{"reps":5,"weight":225},{"reps":5,"weight":225},{"reps":5,"weight":225}],"unit":"lbs","description":"Squats 3x5 @225lbs"}]
+- "then I did pull-ups three sets of ten bodyweight" → [{"exercise":"Pull-ups","type":"weights","sets":[{"reps":10,"weight":0},{"reps":10,"weight":0},{"reps":10,"weight":0}],"unit":"kg","description":"Pull-ups 3x10"}]
+- "went for a run felt great" → [{"exercise":"Running","type":"energy","sets":[],"energyRating":4,"unit":"kg","description":"Running"}]`
 
 interface Props {
   logWorkoutDirect: (entry: WorkoutEntry) => Promise<void>
@@ -56,6 +70,7 @@ export function WorkoutMediaFAB({ logWorkoutDirect }: Props) {
   const filesInputRef = useRef<HTMLInputElement>(null)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null)
+  const transcriptRef = useRef('')
 
   const parseItems = (raw: string): WorkoutScan[] => {
     const parsedRaw = parseAIJson(raw)
@@ -68,7 +83,7 @@ export function WorkoutMediaFAB({ logWorkoutDirect }: Props) {
         ? (p.sets as { reps?: number; weight?: number }[]).map(s => ({ reps: s.reps ?? 0, weight: s.weight ?? 0 }))
         : [{ reps: 0, weight: 0 }],
       energyRating: typeof p.energyRating === 'number' ? p.energyRating : 3,
-      unit: typeof p.unit === 'string' ? p.unit : 'kg',
+      unit: (typeof p.unit === 'string' ? p.unit : 'kg') as WeightUnit,
       description: typeof p.description === 'string' ? p.description : undefined,
     }))
   }
@@ -79,7 +94,7 @@ export function WorkoutMediaFAB({ logWorkoutDirect }: Props) {
     time: new Date().toLocaleTimeString(),
     ...(sv.type === 'energy'
       ? { energyRating: sv.sets[0]?.weight || sv.energyRating }
-      : { sets: sv.sets }),
+      : { sets: sv.sets, unit: sv.unit }),
   })
 
   const handleLogOne = async (idx: number) => {
@@ -177,44 +192,46 @@ Rules:
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const recognition = new SpeechRecognition() as any
     recognition.lang = 'en-US'
-    recognition.interimResults = false
-    recognition.continuous = false
+    // continuous + interim results so the mic keeps listening through pauses —
+    // lets the user dictate multiple exercises with full sets/reps/weight,
+    // instead of cutting off after the first short utterance.
+    recognition.interimResults = true
+    recognition.continuous = true
     recognition.maxAlternatives = 1
     recognitionRef.current = recognition
+    transcriptRef.current = ''
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    recognition.onresult = async (event: any) => {
-      const transcript: string = event.results[0][0].transcript
+    recognition.onresult = (event: any) => {
+      let combined = ''
+      for (let i = 0; i < event.results.length; i++) {
+        combined += event.results[i][0].transcript
+      }
+      transcriptRef.current = combined.trim()
+    }
+
+    recognition.onerror = () => { setMicRecording(false); setMicReady(false) }
+
+    recognition.onend = async () => {
       setMicRecording(false)
       setMicReady(false)
+      const transcript = transcriptRef.current.trim()
+      if (!transcript) return
       setShowMediaMenu(false)
       setScanLoading(true)
       setScanDescription(`"${transcript}"`)
       setShowScanCard(true)
       try {
-        const raw = await groqText(`The user said: "${transcript}". They are logging a workout. Extract the exercise name, sets, reps, and weight. Return ONLY a valid JSON object (no markdown, no explanation):
-{
-  "exercise": "<exercise name, properly capitalised>",
-  "type": "<'weights' if they mentioned sets/reps/weight, 'energy' if cardio or general effort>",
-  "sets": [{"reps": <number>, "weight": <kg, 0 if bodyweight or not mentioned>}, ...],
-  "energyRating": <1-5 only when type is 'energy', else null>,
-  "description": "<2-5 word summary>"
-}
-Examples:
-- "calf raises three sets of twelve" → exercise:"Calf Raises", type:"weights", sets:[{reps:12,weight:0},{reps:12,weight:0},{reps:12,weight:0}]
-- "bench press four sets of eight at 80 kg" → exercise:"Bench Press", type:"weights", sets:[{reps:8,weight:80},{reps:8,weight:80},{reps:8,weight:80},{reps:8,weight:80}]
-- "went for a run felt great" → exercise:"Running", type:"energy", energyRating:4`)
+        const raw = await groqText(VOICE_WORKOUT_PROMPT(transcript))
         const items = parseItems(raw)
         setScanValues(items)
-        setScanDescription(items.map((p: WorkoutScan) => p.description).filter(Boolean).join(' · ') || null)
+        setScanDescription(items.map((p: WorkoutScan) => p.description).filter(Boolean).join(' · ') || `"${transcript}"`)
       } catch {
         setScanDescription('Could not parse — edit manually')
       } finally {
         setScanLoading(false)
       }
     }
-    recognition.onerror = () => { setMicRecording(false); setMicReady(false) }
-    recognition.onend = () => setMicRecording(false)
     setMicReady(true)
   }
 
@@ -394,6 +411,18 @@ For all other messages just reply as plain text.`
                   </button>
                 ))}
               </div>
+              {sv.type === 'weights' && (
+                <div className="flex items-center justify-end gap-2 mb-3 flex-shrink-0">
+                  <span className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>UNIT</span>
+                  <button
+                    onClick={() => update({ unit: toggleKgLbs(sv.unit) })}
+                    className="monument-button px-3 py-1"
+                    style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '8px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}
+                  >
+                    {unitLabel(sv.unit)}
+                  </button>
+                </div>
+              )}
               <div className="flex-1 overflow-y-auto" style={{ minHeight: 0 }}>
                 {sv.sets.map((set, i) => (
                   <div key={i} className="mb-3">
@@ -419,7 +448,7 @@ For all other messages just reply as plain text.`
                       </div>
                       <div>
                         <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>
-                          {(sv.unit || 'KG').toUpperCase()}
+                          {unitLabel(sv.unit)}
                         </label>
                         <input type="number" inputMode="decimal" min={0} placeholder="0"
                           value={set.weight === 0 ? '' : set.weight}
@@ -498,7 +527,7 @@ For all other messages just reply as plain text.`
                                       exercise: w.exercise,
                                       type: w.type,
                                       time: new Date().toLocaleTimeString(),
-                                      ...(w.type === 'energy' ? { energyRating: w.energyRating } : { sets: w.sets }),
+                                      ...(w.type === 'energy' ? { energyRating: w.energyRating } : { sets: w.sets, unit: w.unit }),
                                     }
                                     logWorkoutDirect(entry)
                                     setCoachMessages(prev => [...prev, { text: `✓ Logged ${w.exercise}`, isUser: false }])

@@ -5,6 +5,7 @@ import { TRAINING_CATEGORIES, REST_DAY_CATEGORY } from '@/constants/trainingCate
 import { WorkoutMediaFAB } from './WorkoutMediaFAB'
 import { getToday } from '@/lib/supabase'
 import type { DayLog } from '@/hooks/useWorkout'
+import { toKgValue, unitLabel } from '@/lib/units'
 
 const BTN_BASE = {
   background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)',
@@ -97,8 +98,8 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
             const i = todayWorkouts.length - 1 - ri
             const cat = TRAINING_CATEGORIES.find(c => w.category === c.name)
             const accentColor = cat?.color ?? '#FF9F66'
-            const totalVol = w.type === 'weights' && w.sets
-              ? w.sets.reduce((s, set) => s + set.reps * set.weight, 0)
+            const totalVol = w.type === 'weights' && w.sets && w.unit !== 'km'
+              ? w.sets.reduce((s, set) => s + set.reps * toKgValue(set.weight, w.unit), 0)
               : 0
 
             return (
@@ -144,7 +145,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
                           className="monument-text px-2 py-1"
                           style={{ background: `${accentColor}15`, border: `1px solid ${accentColor}40`, borderRadius: '8px', color: '#6B4423', fontSize: '10px', fontWeight: '700' }}
                         >
-                          {s.reps}<span style={{ color: '#A0725A', fontWeight: '600' }}>r</span> × {s.weight}<span style={{ color: '#A0725A', fontWeight: '600' }}>kg</span>
+                          {s.reps}<span style={{ color: '#A0725A', fontWeight: '600' }}>r</span> × {s.weight}<span style={{ color: '#A0725A', fontWeight: '600' }}>{unitLabel(w.unit).toLowerCase()}</span>
                         </span>
                       ))}
                     </div>
@@ -291,8 +292,8 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
                 {/* Exercises */}
                 <div className="p-3 flex flex-col gap-2">
                   {exercises.map((w, wi) => {
-                    const totalVol = w.type === 'weights' && w.sets
-                      ? w.sets.reduce((s, set) => s + set.reps * set.weight, 0) : 0
+                    const totalVol = w.type === 'weights' && w.sets && w.unit !== 'km'
+                      ? w.sets.reduce((s, set) => s + set.reps * toKgValue(set.weight, w.unit), 0) : 0
                     return (
                       <div key={wi} style={{ background: `${color}08`, borderRadius: '10px', border: `1px solid ${color}20`, padding: '10px 12px' }}>
                         <div className="monument-text mb-1" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '800', textTransform: 'uppercase' }}>
@@ -302,7 +303,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
                           <div className="flex flex-wrap gap-1 mt-1">
                             {w.sets.map((s, si) => (
                               <span key={si} className="monument-text px-2 py-0.5" style={{ background: `${color}15`, border: `1px solid ${color}30`, borderRadius: '6px', color: '#6B4423', fontSize: '9px', fontWeight: '700' }}>
-                                {s.reps}r × {s.weight}kg
+                                {s.reps}r × {s.weight}{unitLabel(w.unit).toLowerCase()}
                               </span>
                             ))}
                           </div>

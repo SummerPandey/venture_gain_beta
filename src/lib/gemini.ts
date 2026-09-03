@@ -11,7 +11,10 @@ export async function geminiVision(base64: string, mimeType: string, prompt: str
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'gemini-flash-latest',
+      // Pro tier — meaningfully better at reading fine label/screenshot text and
+      // estimating food portions than gemini-flash-latest. Vision scans are a
+      // manual, occasional action (not chat), so the extra latency is worth it.
+      model: 'gemini-pro-latest',
       contents: [{
         parts: [
           { text: prompt },
