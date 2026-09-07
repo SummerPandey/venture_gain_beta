@@ -1,9 +1,10 @@
-import { useState, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { ChevronUp, Droplet, Beef, Flame, Candy, Plus, Minus, Pill, X, Camera, Mic, FolderOpen, MessageCircle, Send } from 'lucide-react'
 import { PixelBar } from '@/app/components/shared'
 import { useHealthData } from '@/contexts/HealthDataContext'
 import { groqText, parseAIJson } from '@/lib/groq'
 import { geminiVision } from '@/lib/gemini'
+import { getToday } from '@/lib/supabase'
 
 type NutritionScan = { waterDelta?: number; caloriesDelta?: number; proteinDelta?: number; sugarDelta?: number; description?: string; servingNote?: string }
 
@@ -100,6 +101,30 @@ function StepperInput({ value, onDecrement, onIncrement, onChange, min = 0, max,
 
 const DEFAULT_SCAN = { water: 0, calories: 0, protein: 0, sugar: 0 }
 
+const FOOD_SCAN_DRAFT_KEY = 'venturegain:foodScanDraft'
+
+interface FoodScanDraft {
+  date: string
+  scanValues: typeof DEFAULT_SCAN
+  scanDescription: string | null
+  scanEditing: boolean
+  scanError: string | null
+}
+
+/** Reads the pending (not-yet-approved) food scan result, so a reload or the PWA
+ *  being backgrounded/reclaimed doesn't wipe a scan the user hasn't approved yet.
+ *  Ignored once the calendar day rolls over. */
+function readFoodScanDraft(): FoodScanDraft | null {
+  try {
+    const raw = localStorage.getItem(FOOD_SCAN_DRAFT_KEY)
+    if (!raw) return null
+    const draft = JSON.parse(raw) as FoodScanDraft
+    return draft.date === getToday() ? draft : null
+  } catch {
+    return null
+  }
+}
+
 export function FoodWaterTab() {
   const {
     state, limits, steps, maxes,
@@ -115,17 +140,35 @@ export function FoodWaterTab() {
   } = useHealthData().nutrition
 
 
-  const [scanEditing, setScanEditing] = useState(false)
-  const [scanValues, setScanValues] = useState(DEFAULT_SCAN)
+  const [initialScanDraft] = useState(() => readFoodScanDraft())
+  const [scanEditing, setScanEditing] = useState(initialScanDraft?.scanEditing ?? false)
+  const [scanValues, setScanValues] = useState(initialScanDraft?.scanValues ?? DEFAULT_SCAN)
   const [scanLoading, setScanLoading] = useState(false)
-  const [scanError, setScanError] = useState<string | null>(null)
-  const [scanDescription, setScanDescription] = useState<string | null>(null)
+  const [scanError, setScanError] = useState<string | null>(initialScanDraft?.scanError ?? null)
+  const [scanDescription, setScanDescription] = useState<string | null>(initialScanDraft?.scanDescription ?? null)
   const [showMediaMenu, setShowMediaMenu] = useState(false)
   const [companionMode, setCompanionMode] = useState(false)
   const [companionInput, setCompanionInput] = useState('')
   const [companionLoading, setCompanionLoading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const filesInputRef = useRef<HTMLInputElement>(null)
+
+  // Re-open the scan card on mount if a draft was restored — the card's
+  // visibility is driven by the shared uploadedImage flag, not local state.
+  useEffect(() => {
+    if (initialScanDraft) simulateAIScan()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Mirror the pending scan to localStorage so it survives reload/backgrounding.
+  useEffect(() => {
+    if (!state.uploadedImage) {
+      try { localStorage.removeItem(FOOD_SCAN_DRAFT_KEY) } catch { /* private mode etc — best-effort */ }
+      return
+    }
+    const draft: FoodScanDraft = { date: getToday(), scanValues, scanDescription, scanEditing, scanError }
+    try { localStorage.setItem(FOOD_SCAN_DRAFT_KEY, JSON.stringify(draft)) } catch { /* private mode etc — best-effort */ }
+  }, [state.uploadedImage, scanValues, scanDescription, scanEditing, scanError])
 
   const resetScanState = () => {
     setScanValues(DEFAULT_SCAN)
