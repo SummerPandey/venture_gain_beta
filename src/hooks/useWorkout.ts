@@ -187,20 +187,35 @@ export function useWorkout() {
     loadAll(user.id)
   }, [user])
 
+  const flushPendingWorkout = () => {
+    if (pendingWorkout.current && userRef.current) {
+      upsertDay(userRef.current.id, pendingWorkout.current)
+      pendingWorkout.current = null
+    }
+  }
+
   // Reload when the app returns to the foreground on a new calendar day, so the
   // previous day's workout/cardio don't carry over into today.
+  //
+  // Also flush any pending (debounced, not-yet-saved) edit the moment the page
+  // goes hidden — this provider lives at the app root and never actually
+  // unmounts during normal tab switching, so it's the only reliable point to
+  // save before iOS/Android can reclaim a backgrounded PWA mid-debounce.
   useEffect(() => {
-    const onVisible = () => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') { flushPendingWorkout(); return }
       if (document.visibilityState !== 'visible') return
       const u = userRef.current
       if (!u) return
       if (getToday() !== loadedDate.current) loadAll(u.id)
     }
-    document.addEventListener('visibilitychange', onVisible)
-    window.addEventListener('focus', onVisible)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('focus', onVisibilityChange)
+    window.addEventListener('pagehide', flushPendingWorkout)
     return () => {
-      document.removeEventListener('visibilitychange', onVisible)
-      window.removeEventListener('focus', onVisible)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('focus', onVisibilityChange)
+      window.removeEventListener('pagehide', flushPendingWorkout)
     }
   }, [])
 
@@ -305,12 +320,12 @@ export function useWorkout() {
     return () => clearTimeout(id)
   }, [workoutLevel, energyLevel, cardioMinutes, todayWorkouts, loaded, user, isDirty])
 
-  // Flush on unmount
+  // Last-resort flush on a genuine unmount (e.g. sign-out) — the visibilitychange/
+  // pagehide handlers above cover the normal backgrounding case, since this
+  // provider otherwise stays mounted for the life of the session.
   useEffect(() => {
     return () => {
-      if (pendingWorkout.current && userRef.current) {
-        upsertDay(userRef.current.id, pendingWorkout.current)
-      }
+      flushPendingWorkout()
     }
   }, [])
 

@@ -120,21 +120,36 @@ export function useNutrition() {
     loadAll(user.id).then(() => setLoaded(true))
   }, [user])
 
+  const flushPendingNutrition = () => {
+    if (pendingNutrition.current && userRef.current) {
+      upsertDay(userRef.current.id, pendingNutrition.current)
+      pendingNutrition.current = null
+    }
+  }
+
   // Reset/reload when the app returns to the foreground on a new calendar day.
   // The PWA stays in memory across midnight, so without this the previous day's
   // totals carry over and get written into today's row on the next edit.
+  //
+  // Also flush any pending (debounced, not-yet-saved) edit the moment the page
+  // goes hidden — this provider lives at the app root and never actually
+  // unmounts during normal tab switching, so it's the only reliable point to
+  // save before iOS/Android can reclaim a backgrounded PWA mid-debounce.
   useEffect(() => {
-    const onVisible = () => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') { flushPendingNutrition(); return }
       if (document.visibilityState !== 'visible') return
       const u = userRef.current
       if (!u) return
       if (getToday() !== loadedDate.current) loadAll(u.id)
     }
-    document.addEventListener('visibilitychange', onVisible)
-    window.addEventListener('focus', onVisible)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('focus', onVisibilityChange)
+    window.addEventListener('pagehide', flushPendingNutrition)
     return () => {
-      document.removeEventListener('visibilitychange', onVisible)
-      window.removeEventListener('focus', onVisible)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('focus', onVisibilityChange)
+      window.removeEventListener('pagehide', flushPendingNutrition)
     }
   }, [])
 
@@ -157,12 +172,12 @@ export function useNutrition() {
     return () => clearTimeout(id)
   }, [state.waterLiters, state.calories, state.proteinGrams, state.sugarGrams, todayMultivitamins, loaded, user])
 
-  // Flush any pending save when tab is switched (unmount)
+  // Last-resort flush on a genuine unmount (e.g. sign-out) — the visibilitychange/
+  // pagehide handlers above cover the normal backgrounding case, since this
+  // provider otherwise stays mounted for the life of the session.
   useEffect(() => {
     return () => {
-      if (pendingNutrition.current && userRef.current) {
-        upsertDay(userRef.current.id, pendingNutrition.current)
-      }
+      flushPendingNutrition()
     }
   }, [])
 
