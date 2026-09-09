@@ -162,12 +162,14 @@ export function useNutrition() {
   useEffect(() => {
     if (!loaded || !user || !userModified.current) return
     const { waterLiters, calories, proteinGrams, sugarGrams } = state
+    // calories/protein/sugar/multivitamins are `integer` columns — round
+    // defensively here too, since this is the actual DB write boundary.
     const fields = {
       water_liters: waterLiters,
-      calories,
-      protein_grams: proteinGrams,
-      sugar_grams: sugarGrams,
-      multivitamins: todayMultivitamins,
+      calories: Math.round(calories),
+      protein_grams: Math.round(proteinGrams),
+      sugar_grams: Math.round(sugarGrams),
+      multivitamins: Math.round(todayMultivitamins),
     }
     pendingNutrition.current = fields
     const id = setTimeout(() => {
@@ -227,10 +229,10 @@ export function useNutrition() {
     const { waterLiters, calories, proteinGrams, sugarGrams } = state
     upsertDay(user.id, {
       water_liters: waterLiters,
-      calories,
-      protein_grams: proteinGrams,
-      sugar_grams: sugarGrams,
-      multivitamins: todayMultivitamins,
+      calories: Math.round(calories),
+      protein_grams: Math.round(proteinGrams),
+      sugar_grams: Math.round(sugarGrams),
+      multivitamins: Math.round(todayMultivitamins),
     }).then(err => setSaveError(err))
   }
 
@@ -286,9 +288,13 @@ export function useNutrition() {
     setState(s => ({
       ...s,
       waterLiters: clamp(s.waterLiters + water, 0, WATER_MAX),
-      calories: clamp(s.calories + calories, 0, CALORIES_MAX),
-      proteinGrams: clamp(s.proteinGrams + protein, 0, PROTEIN_MAX),
-      sugarGrams: clamp(s.sugarGrams + sugar, 0, SUGAR_MAX),
+      // calories/protein/sugar are `integer` columns in daily_logs — AI-estimated
+      // values (e.g. "30.4g protein") must be rounded here or the whole day's
+      // upsert fails with a Postgres type error, silently dropping water too
+      // since all four fields save together in one call.
+      calories: Math.round(clamp(s.calories + calories, 0, CALORIES_MAX)),
+      proteinGrams: Math.round(clamp(s.proteinGrams + protein, 0, PROTEIN_MAX)),
+      sugarGrams: Math.round(clamp(s.sugarGrams + sugar, 0, SUGAR_MAX)),
       uploadedImage: null,
     }))
   }
