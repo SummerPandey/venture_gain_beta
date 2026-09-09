@@ -137,6 +137,7 @@ export function FoodWaterTab() {
     creatineTaken, toggleCreatine,
     celebration,
     simulateAIScan, approveScan, dismissScan,
+    saveError, retrySave,
   } = useHealthData().nutrition
 
 
@@ -389,6 +390,28 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
           }}
         >
           ✦ {celebration} ✦
+        </div>
+      )}
+
+      {saveError && (
+        <div
+          className="flex items-center justify-between gap-2 px-4 py-3 mb-4"
+          style={{
+            background: 'rgba(211, 47, 47, 0.08)',
+            border: '2px solid rgba(211, 47, 47, 0.3)',
+            borderRadius: '12px',
+          }}
+        >
+          <div className="monument-text" style={{ color: '#D32F2F', fontSize: '10px', fontWeight: '700', lineHeight: 1.4 }}>
+            Couldn't save — {saveError}
+          </div>
+          <button
+            onClick={retrySave}
+            className="monument-button px-3 py-1.5 flex-shrink-0"
+            style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '8px', border: '2px solid #D32F2F', color: '#D32F2F', fontSize: '9px', fontWeight: '700' }}
+          >
+            RETRY
+          </button>
         </div>
       )}
 

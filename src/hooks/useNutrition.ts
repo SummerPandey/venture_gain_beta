@@ -23,7 +23,10 @@ function getWeekStart(): string {
 }
 
 
-async function upsertDay(userId: string, fields: Record<string, unknown>) {
+/** Returns the Supabase error (if any) so callers can surface it — previously
+ *  this only logged to the console, which nobody sees on a phone, so a save
+ *  could fail silently forever with no visible symptom besides "it didn't save". */
+async function upsertDay(userId: string, fields: Record<string, unknown>): Promise<string | null> {
   const { error } = await supabase
     .from('daily_logs')
     .upsert(
@@ -31,6 +34,7 @@ async function upsertDay(userId: string, fields: Record<string, unknown>) {
       { onConflict: 'user_id,log_date' }
     )
   if (error) console.error('[nutrition] upsert error:', error)
+  return error?.message ?? null
 }
 
 export function useNutrition() {
@@ -51,6 +55,7 @@ export function useNutrition() {
   const [todayMultivitamins, setTodayMultivitamins] = useState(0)
   const [creatineTaken, setCreatineTaken] = useState(false)
   const [celebration, setCelebration] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   const prevWater = useRef(0)
   const prevCalories = useRef(0)
@@ -122,7 +127,7 @@ export function useNutrition() {
 
   const flushPendingNutrition = () => {
     if (pendingNutrition.current && userRef.current) {
-      upsertDay(userRef.current.id, pendingNutrition.current)
+      upsertDay(userRef.current.id, pendingNutrition.current).then(err => { if (err) setSaveError(err) })
       pendingNutrition.current = null
     }
   }
@@ -166,7 +171,7 @@ export function useNutrition() {
     }
     pendingNutrition.current = fields
     const id = setTimeout(() => {
-      upsertDay(user.id, fields)
+      upsertDay(user.id, fields).then(err => setSaveError(err))
       pendingNutrition.current = null
     }, 600)
     return () => clearTimeout(id)
@@ -216,19 +221,30 @@ export function useNutrition() {
 
   const clamp = (val: number, min: number, max: number) => Math.min(max, Math.max(min, val))
 
+  /** Re-attempts the last save immediately, for a "tap to retry" banner. */
+  const retrySave = () => {
+    if (!user) return
+    const { waterLiters, calories, proteinGrams, sugarGrams } = state
+    upsertDay(user.id, {
+      water_liters: waterLiters,
+      calories,
+      protein_grams: proteinGrams,
+      sugar_grams: sugarGrams,
+      multivitamins: todayMultivitamins,
+    }).then(err => setSaveError(err))
+  }
+
   const saveVitamins = (newTodayCount: number) => {
     if (!user) return
-    upsertDay(user.id, { multivitamins: newTodayCount }).catch(e => console.error('saveVitamins failed:', e))
+    upsertDay(user.id, { multivitamins: newTodayCount }).then(err => setSaveError(err))
   }
 
   const toggleCreatine = async () => {
     const next = !creatineTaken
     setCreatineTaken(next)
     if (user) {
-      await supabase.from('daily_logs').upsert(
-        { user_id: user.id, log_date: getToday(), creatine_taken: next, updated_at: new Date().toISOString() },
-        { onConflict: 'user_id,log_date' }
-      )
+      const err = await upsertDay(user.id, { creatine_taken: next })
+      setSaveError(err)
     }
   }
 
@@ -303,5 +319,6 @@ export function useNutrition() {
     creatineTaken,
     toggleCreatine,
     simulateAIScan, approveScan, dismissScan,
+    saveError, retrySave,
   }
 }
