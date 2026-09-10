@@ -5,6 +5,7 @@ import { healthSnapshot } from '@/store/healthSnapshot'
 import { supabase, getToday } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { useUserSettings } from '@/contexts/UserSettingsContext'
+import { convertWeightValue } from '@/lib/units'
 
 const WORKOUT_DRAFT_KEY = 'venturegain:workoutDraft'
 
@@ -97,8 +98,10 @@ export function useWorkout() {
     if (initialDraft?.selectedExercise) return
     setUnitState(settings.defaultWeightUnit)
   }, [settings.defaultWeightUnit, initialDraft])
-  /** Changing the unit while logging also remembers it as the new default for next time. */
+  /** Changing the unit while logging converts the already-typed set weights to match
+   *  (15kg -> 33.1lbs, not just relabeled) and remembers it as the new default for next time. */
   const setUnit = (u: WeightUnit) => {
+    setSets(prev => prev.map(s => ({ ...s, weight: convertWeightValue(s.weight, unit, u) })))
     setUnitState(u)
     setDefaultWeightUnit(u)
   }

@@ -10,7 +10,7 @@ import type { DayLog } from '@/hooks/useWorkout'
 import { CARDIO_MAX_MINUTES } from '@/constants'
 import { TRAINING_CATEGORIES } from '@/constants/trainingCategories'
 import type { ExerciseProgress, WorkoutSet, WorkoutEntry, WeightUnit } from '@/types'
-import { toggleKgLbs, unitLabel, toKgValue } from '@/lib/units'
+import { toggleKgLbs, unitLabel, toKgValue, toggleSetsUnit } from '@/lib/units'
 
 interface WorkoutScan {
   exercise: string
@@ -1158,7 +1158,7 @@ For all other messages just reply as plain text.`
         const ed = editingWorkoutData
         const dismiss = () => { setEditingWorkoutIdx(null); setEditingWorkoutData(null) }
         const updateSets = (newSets: WorkoutSet[]) => setEditingWorkoutData(prev => prev ? { ...prev, sets: newSets } : prev)
-        const cycleEditUnit = () => setEditingWorkoutData(prev => prev ? { ...prev, unit: toggleKgLbs(prev.unit) } : prev)
+        const cycleEditUnit = () => setEditingWorkoutData(prev => prev ? { ...prev, ...toggleSetsUnit(prev.sets, prev.unit) } : prev)
 
         const handleSave = async () => {
           const entry: WorkoutEntry = {
@@ -1562,7 +1562,7 @@ For all other messages just reply as plain text.`
                 <div className="flex items-center justify-end gap-2 mb-3 flex-shrink-0">
                   <span className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>UNIT</span>
                   <button
-                    onClick={() => update({ unit: toggleKgLbs(sv.unit) })}
+                    onClick={() => update(toggleSetsUnit(sv.sets, sv.unit))}
                     className="monument-button px-3 py-1"
                     style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '8px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}
                   >

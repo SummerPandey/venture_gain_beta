@@ -4,7 +4,7 @@ import { groqText, groqChat, parseAIJson } from '@/lib/groq'
 import { geminiVision } from '@/lib/gemini'
 import { healthSnapshot } from '@/store/healthSnapshot'
 import type { WorkoutEntry, WorkoutSet, WeightUnit } from '@/types'
-import { toggleKgLbs, unitLabel } from '@/lib/units'
+import { toggleSetsUnit, unitLabel } from '@/lib/units'
 
 interface WorkoutScan {
   exercise: string
@@ -415,7 +415,7 @@ For all other messages just reply as plain text.`
                 <div className="flex items-center justify-end gap-2 mb-3 flex-shrink-0">
                   <span className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>UNIT</span>
                   <button
-                    onClick={() => update({ unit: toggleKgLbs(sv.unit) })}
+                    onClick={() => update(toggleSetsUnit(sv.sets, sv.unit))}
                     className="monument-button px-3 py-1"
                     style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '8px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}
                   >
