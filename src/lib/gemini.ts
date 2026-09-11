@@ -11,10 +11,10 @@ export async function geminiVision(base64: string, mimeType: string, prompt: str
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      // Pro tier — meaningfully better at reading fine label/screenshot text and
-      // estimating food portions than gemini-flash-latest. Vision scans are a
-      // manual, occasional action (not chat), so the extra latency is worth it.
-      model: 'gemini-pro-latest',
+      // Flash tier — the pro tier has zero free-tier quota on this project (429s on
+      // every request), so scans silently failed. Flash still reads labels/estimates
+      // portions fine and actually has free-tier quota available.
+      model: 'gemini-flash-latest',
       contents: [{
         parts: [
           { text: prompt },
