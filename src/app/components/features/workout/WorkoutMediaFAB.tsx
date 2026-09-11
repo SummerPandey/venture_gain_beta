@@ -5,6 +5,7 @@ import { geminiVision } from '@/lib/gemini'
 import { healthSnapshot } from '@/store/healthSnapshot'
 import type { WorkoutEntry, WorkoutSet, WeightUnit } from '@/types'
 import { toggleSetsUnit, unitLabel } from '@/lib/units'
+import { useArithmeticField } from '@/hooks/useArithmeticField'
 
 interface WorkoutScan {
   exercise: string
@@ -53,6 +54,7 @@ export function WorkoutMediaFAB({ logWorkoutDirect }: Props) {
   const [scanDescription, setScanDescription] = useState<string | null>(null)
   const [scanLoading, setScanLoading] = useState(false)
   const [micReady, setMicReady] = useState(false)
+  const { fieldProps: arithField } = useArithmeticField()
   const [micRecording, setMicRecording] = useState(false)
   const [textMode, setTextMode] = useState(false)
   const [textInput, setTextInput] = useState('')
@@ -440,20 +442,18 @@ For all other messages just reply as plain text.`
                       </div>
                       <div>
                         <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>REPS</label>
-                        <input type="number" inputMode="numeric" min={0} placeholder="0"
-                          value={set.reps === 0 ? '' : set.reps}
-                          onChange={e => updateSetField(i, { reps: Math.max(0, parseInt(e.target.value) || 0) })}
-                          onFocus={e => e.target.select()} className="w-full monument-text"
+                        <input type="text" inputMode="numeric" placeholder="0"
+                          {...arithField(`fab-reps-${i}`, set.reps, n => updateSetField(i, { reps: n }), { integer: true })}
+                          className="w-full monument-text"
                           style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '14px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }} />
                       </div>
                       <div>
                         <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>
                           {unitLabel(sv.unit)}
                         </label>
-                        <input type="number" inputMode="decimal" min={0} placeholder="0"
-                          value={set.weight === 0 ? '' : set.weight}
-                          onChange={e => updateSetField(i, { weight: Math.max(0, parseFloat(e.target.value) || 0) })}
-                          onFocus={e => e.target.select()} className="w-full monument-text"
+                        <input type="text" inputMode="decimal" placeholder="0"
+                          {...arithField(`fab-weight-${i}`, set.weight, n => updateSetField(i, { weight: n }))}
+                          className="w-full monument-text"
                           style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '14px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }} />
                       </div>
                     </div>

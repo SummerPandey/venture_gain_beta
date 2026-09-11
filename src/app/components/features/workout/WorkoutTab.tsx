@@ -11,6 +11,7 @@ import { CARDIO_MAX_MINUTES } from '@/constants'
 import { TRAINING_CATEGORIES } from '@/constants/trainingCategories'
 import type { ExerciseProgress, WorkoutSet, WorkoutEntry, WeightUnit } from '@/types'
 import { toggleKgLbs, unitLabel, toKgValue, toggleSetsUnit } from '@/lib/units'
+import { useArithmeticField } from '@/hooks/useArithmeticField'
 
 interface WorkoutScan {
   exercise: string
@@ -87,6 +88,8 @@ export function WorkoutTab({ onEnterWorkoutMode }: { onEnterWorkoutMode?: () => 
     scheduledTime, setScheduledTime,
     scheduledCategories, toggleScheduledCategory,
   } = useHealthData().workout
+
+  const { fieldProps: arithField } = useArithmeticField()
 
   // Derived workout/energy levels from actual logged data
   // Workout bar: 20% per exercise logged, capped at 100%
@@ -1056,11 +1059,9 @@ For all other messages just reply as plain text.`
                     <div>
                       <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>REPS</label>
                       <input
-                        type="number" inputMode="numeric" min={0}
-                        value={set.reps === 0 ? '' : set.reps}
+                        type="text" inputMode="numeric"
                         placeholder="0"
-                        onChange={e => updateSet(i, 'reps', Math.max(0, parseInt(e.target.value) || 0))}
-                        onFocus={e => e.target.select()}
+                        {...arithField(`main-reps-${i}`, set.reps, n => updateSet(i, 'reps', n), { integer: true })}
                         className="w-full px-2 py-1 monument-text"
                         style={{ background: 'rgba(255, 252, 248, 0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '12px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)', textAlign: 'center' }}
                       />
@@ -1068,11 +1069,9 @@ For all other messages just reply as plain text.`
                     <div>
                       <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>{unitLabel(unit)}</label>
                       <input
-                        type="number" inputMode="decimal" min={0}
-                        value={set.weight === 0 ? '' : set.weight}
+                        type="text" inputMode="decimal"
                         placeholder="0"
-                        onChange={e => updateSet(i, 'weight', Math.max(0, parseFloat(e.target.value) || 0))}
-                        onFocus={e => e.target.select()}
+                        {...arithField(`main-weight-${i}`, set.weight, n => updateSet(i, 'weight', n))}
                         className="w-full px-2 py-1 monument-text"
                         style={{ background: 'rgba(255, 252, 248, 0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '12px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)', textAlign: 'center' }}
                       />
@@ -1210,10 +1209,8 @@ For all other messages just reply as plain text.`
                     <div className="flex-1">
                       <div className="monument-text mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px' }}>REPS</div>
                       <input
-                        type="number" inputMode="numeric" min={0} placeholder="0"
-                        value={s.reps === 0 ? '' : s.reps}
-                        onChange={e => updateSets(ed.sets.map((x, xi) => xi === si ? { ...x, reps: Math.max(0, parseInt(e.target.value) || 0) } : x))}
-                        onFocus={e => e.target.select()}
+                        type="text" inputMode="numeric" placeholder="0"
+                        {...arithField(`edit-reps-${si}`, s.reps, n => updateSets(ed.sets.map((x, xi) => xi === si ? { ...x, reps: n } : x)), { integer: true })}
                         className="w-full monument-text"
                         style={{ height: 56, background: '#fff', border: '2px solid #C49A6C', borderRadius: '12px', color: '#6B4423', fontSize: '18px', fontWeight: '700', textAlign: 'center', boxShadow: '0 3px 0 rgba(139,90,62,0.15)' }}
                       />
@@ -1221,10 +1218,8 @@ For all other messages just reply as plain text.`
                     <div className="flex-1">
                       <div className="monument-text mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px' }}>WEIGHT ({unitLabel(ed.unit)})</div>
                       <input
-                        type="number" inputMode="decimal" min={0} placeholder="0"
-                        value={s.weight === 0 ? '' : s.weight}
-                        onChange={e => updateSets(ed.sets.map((x, xi) => xi === si ? { ...x, weight: Math.max(0, parseFloat(e.target.value) || 0) } : x))}
-                        onFocus={e => e.target.select()}
+                        type="text" inputMode="decimal" placeholder="0"
+                        {...arithField(`edit-weight-${si}`, s.weight, n => updateSets(ed.sets.map((x, xi) => xi === si ? { ...x, weight: n } : x)))}
                         className="w-full monument-text"
                         style={{ height: 56, background: '#fff', border: '2px solid #C49A6C', borderRadius: '12px', color: '#6B4423', fontSize: '18px', fontWeight: '700', textAlign: 'center', boxShadow: '0 3px 0 rgba(139,90,62,0.15)' }}
                       />
@@ -1594,11 +1589,9 @@ For all other messages just reply as plain text.`
                           <div>
                             <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>REPS</label>
                             <input
-                              type="number" inputMode="numeric" min={0}
+                              type="text" inputMode="numeric"
                               placeholder="0"
-                              value={set.reps === 0 ? '' : set.reps}
-                              onChange={e => updateSet(i, { reps: Math.max(0, parseInt(e.target.value) || 0) })}
-                              onFocus={e => e.target.select()}
+                              {...arithField(`scan-reps-${i}`, set.reps, n => updateSet(i, { reps: n }), { integer: true })}
                               className="w-full monument-text"
                               style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '14px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }}
                             />
@@ -1606,11 +1599,9 @@ For all other messages just reply as plain text.`
                           <div>
                             <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>{unitLabel(sv.unit)}</label>
                             <input
-                              type="number" inputMode="decimal" min={0}
+                              type="text" inputMode="decimal"
                               placeholder="0"
-                              value={set.weight === 0 ? '' : set.weight}
-                              onChange={e => updateSet(i, { weight: Math.max(0, parseFloat(e.target.value) || 0) })}
-                              onFocus={e => e.target.select()}
+                              {...arithField(`scan-weight-${i}`, set.weight, n => updateSet(i, { weight: n }))}
                               className="w-full monument-text"
                               style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '14px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }}
                             />
