@@ -4,4 +4,5 @@ export const healthSnapshot = {
   sleepHours: 0,
   waterLiters: 0,
   calories: 0,
+  steps: 0,
 }

@@ -6,6 +6,7 @@ import { supabase, getToday } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { useUserSettings } from '@/contexts/UserSettingsContext'
 import { convertWeightValue } from '@/lib/units'
+import { fetchSteps, getGoogleHealthAuthUrl, GoogleHealthNotConnectedError } from '@/lib/googleHealth'
 
 const WORKOUT_DRAFT_KEY = 'venturegain:workoutDraft'
 
@@ -82,6 +83,8 @@ export function useWorkout() {
   const [workoutLevel, setWorkoutLevel] = useState(0)
   const [energyLevel, setEnergyLevel] = useState(0)
   const [cardioMinutes, setCardioMinutes] = useState(0)
+  const [steps, setSteps] = useState(0)
+  const [stepsStatus, setStepsStatus] = useState<'loading' | 'connected' | 'not_connected' | 'error'>('loading')
   const [todayWorkouts, setTodayWorkouts] = useState<WorkoutEntry[]>([])
   const [uploadedImage, setUploadedImage] = useState<string | null>(null)
   const [initialDraft] = useState(() => readWorkoutDraft())
@@ -289,6 +292,28 @@ export function useWorkout() {
 
   useEffect(() => { healthSnapshot.workoutLevel = workoutLevel }, [workoutLevel])
   useEffect(() => { healthSnapshot.energyLevel = energyLevel }, [energyLevel])
+  useEffect(() => { healthSnapshot.steps = steps }, [steps])
+
+  /** Pulls today's step count from the Google Health proxy (Fitbit/Google Fit data,
+   *  server-side OAuth — see /api/google-health-steps) and persists it alongside the
+   *  rest of today's row so it's available even before the next successful fetch. */
+  const refreshSteps = () => {
+    setStepsStatus(prev => (prev === 'connected' ? prev : 'loading'))
+    fetchSteps(getToday())
+      .then(count => {
+        setSteps(count)
+        setStepsStatus('connected')
+        if (userRef.current) upsertDay(userRef.current.id, { steps: count }).catch(() => {})
+      })
+      .catch(e => {
+        setStepsStatus(e instanceof GoogleHealthNotConnectedError ? 'not_connected' : 'error')
+      })
+  }
+
+  useEffect(() => {
+    if (!loaded || !user) return
+    refreshSteps()
+  }, [loaded, user])
 
   // Mirror the in-progress (not-yet-logged) exercise to localStorage so it survives
   // the PWA getting backgrounded and reclaimed mid-session — see readWorkoutDraft().
@@ -493,6 +518,7 @@ export function useWorkout() {
 
   return {
     workoutLevel, energyLevel, cardioMinutes, weeklyCardioMinutes,
+    steps, stepsStatus, refreshSteps, connectStepsUrl: getGoogleHealthAuthUrl(),
     cardioTarget: settings.cardioTarget,
     uploadedImage, selectedExercise, setSelectedExercise,
     trackingMode, setTrackingMode,

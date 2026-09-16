@@ -3,6 +3,7 @@ import type { SleepState } from '@/types'
 import { healthSnapshot } from '@/store/healthSnapshot'
 import { supabase, getToday } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
+import { fetchSleepHours, getGoogleHealthAuthUrl, GoogleHealthNotConnectedError } from '@/lib/googleHealth'
 
 const SLEEP_HOURS_MAX = 12
 const SLEEP_MINUTES_MAX = 59
@@ -30,6 +31,8 @@ export function useSleep() {
     energyLevel: 0,
   })
   const [loaded, setLoaded] = useState(false)
+  const [sleepStatus, setSleepStatus] = useState<'loading' | 'connected' | 'not_connected' | 'error'>('loading')
+  const [fitbitSynced, setFitbitSynced] = useState(false)
   const userModified = useRef(false)
   const userRef = useRef(user)
   useEffect(() => { userRef.current = user }, [user])
@@ -114,6 +117,32 @@ export function useSleep() {
 
   useEffect(() => { healthSnapshot.sleepHours = totalSleepHours }, [totalSleepHours])
 
+  /** Pulls last night's sleep from the Google Health proxy (Fitbit/Google Fit data) and
+   *  fills it in — but only if nothing's logged for today yet and the user hasn't already
+   *  started manually editing this session, so a real Fitbit sync never clobbers a
+   *  deliberate manual entry or correction. */
+  const refreshFitbitSleep = () => {
+    setSleepStatus(prev => (prev === 'connected' ? prev : 'loading'))
+    fetchSleepHours(getToday())
+      .then(hours => {
+        setSleepStatus('connected')
+        if (userModified.current || state.sleepHours !== 0 || state.sleepMinutes !== 0) return
+        const wholeHours = Math.min(SLEEP_HOURS_MAX, Math.floor(hours))
+        const minutes = Math.min(SLEEP_MINUTES_MAX, Math.round((hours - Math.floor(hours)) * 60))
+        setState(s => ({ ...s, sleepHours: wholeHours, sleepMinutes: minutes }))
+        setFitbitSynced(true)
+        if (userRef.current) upsertDay(userRef.current.id, { sleep_hours: wholeHours, sleep_minutes: minutes }).catch(() => {})
+      })
+      .catch(e => {
+        setSleepStatus(e instanceof GoogleHealthNotConnectedError ? 'not_connected' : 'error')
+      })
+  }
+
+  useEffect(() => {
+    if (!loaded || !user) return
+    refreshFitbitSleep()
+  }, [loaded, user])
+
   // Auto-save 600ms after last user-initiated change (not on initial load)
   useEffect(() => {
     if (!loaded || !user || !userModified.current) return
@@ -136,10 +165,10 @@ export function useSleep() {
     }
   }, [])
 
-  const adjustSleepHours = (delta: number) => { userModified.current = true; setState(s => ({ ...s, sleepHours: Math.min(SLEEP_HOURS_MAX, Math.max(0, s.sleepHours + delta)) })) }
-  const setSleepHours = (val: number) => { userModified.current = true; setState(s => ({ ...s, sleepHours: Math.min(SLEEP_HOURS_MAX, Math.max(0, val)) })) }
-  const adjustSleepMinutes = (delta: number) => { userModified.current = true; setState(s => ({ ...s, sleepMinutes: Math.min(SLEEP_MINUTES_MAX, Math.max(0, s.sleepMinutes + delta)) })) }
-  const setSleepMinutes = (val: number) => { userModified.current = true; setState(s => ({ ...s, sleepMinutes: Math.min(SLEEP_MINUTES_MAX, Math.max(0, val)) })) }
+  const adjustSleepHours = (delta: number) => { userModified.current = true; setFitbitSynced(false); setState(s => ({ ...s, sleepHours: Math.min(SLEEP_HOURS_MAX, Math.max(0, s.sleepHours + delta)) })) }
+  const setSleepHours = (val: number) => { userModified.current = true; setFitbitSynced(false); setState(s => ({ ...s, sleepHours: Math.min(SLEEP_HOURS_MAX, Math.max(0, val)) })) }
+  const adjustSleepMinutes = (delta: number) => { userModified.current = true; setFitbitSynced(false); setState(s => ({ ...s, sleepMinutes: Math.min(SLEEP_MINUTES_MAX, Math.max(0, s.sleepMinutes + delta)) })) }
+  const setSleepMinutes = (val: number) => { userModified.current = true; setFitbitSynced(false); setState(s => ({ ...s, sleepMinutes: Math.min(SLEEP_MINUTES_MAX, Math.max(0, val)) })) }
   const adjustEnergy = (delta: number) => { userModified.current = true; setState(s => ({ ...s, energyLevel: Math.min(ENERGY_MAX, Math.max(0, s.energyLevel + delta)) })) }
   const setEnergy = (val: number) => { userModified.current = true; setState(s => ({ ...s, energyLevel: Math.min(ENERGY_MAX, Math.max(0, val)) })) }
 
@@ -147,6 +176,7 @@ export function useSleep() {
     state,
     totalSleepHours,
     loaded,
+    sleepStatus, fitbitSynced, connectSleepUrl: getGoogleHealthAuthUrl(),
     weeklyChartData,
     constants: { hoursMax: SLEEP_HOURS_MAX, minutesMax: SLEEP_MINUTES_MAX, minutesStep: SLEEP_MINUTES_STEP, energyMax: ENERGY_MAX },
     adjustSleepHours, setSleepHours,

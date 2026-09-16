@@ -55,6 +55,7 @@ export function SleepTab() {
     state,
     totalSleepHours,
     constants,
+    sleepStatus, fitbitSynced, connectSleepUrl,
     weeklyChartData,
     adjustSleepHours, setSleepHours,
     adjustSleepMinutes, setSleepMinutes,
@@ -107,6 +108,26 @@ export function SleepTab() {
           color="#9B7FC8"
           overThreshold={9 + 10 / 60}
         />
+        {sleepStatus === 'not_connected' || sleepStatus === 'error' ? (
+          <>
+            <a
+              href={connectSleepUrl}
+              className="monument-button w-full flex items-center justify-center gap-1.5 mt-3"
+              style={{ height: 32, background: 'rgba(155,127,200,0.1)', borderRadius: 8, border: '2px dashed #9B7FC8', color: '#9B7FC8', fontSize: '9px', fontWeight: '700', textDecoration: 'none', letterSpacing: '0.5px' }}
+            >
+              <Moon size={12} strokeWidth={2.5} /> {sleepStatus === 'error' ? 'RECONNECT FITBIT FOR SLEEP' : 'CONNECT FITBIT FOR SLEEP'}
+            </a>
+            {sleepStatus === 'error' && (
+              <div className="monument-text text-center mt-1" style={{ color: '#A0725A', fontSize: '8px', fontWeight: '700', opacity: 0.6 }}>
+                Existing connection doesn't cover sleep yet — reconnect to add it
+              </div>
+            )}
+          </>
+        ) : fitbitSynced ? (
+          <div className="monument-text text-center mt-2" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', opacity: 0.6 }}>
+            Synced from Fitbit — edit above to override
+          </div>
+        ) : null}
       </div>
 
       {/* Energy Level */}
