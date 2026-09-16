@@ -6,6 +6,8 @@ import { useAuth } from '@/contexts/AuthContext'
 import { fetchSleepHours, getGoogleHealthAuthUrl, GoogleHealthNotConnectedError } from '@/lib/googleHealth'
 
 const SLEEP_HOURS_MAX = 12
+const SLEEP_REFRESH_INTERVAL_MS = 10 * 60 * 1000
+const SLEEP_REFRESH_MIN_GAP_MS = 60 * 1000
 const SLEEP_MINUTES_MAX = 59
 const SLEEP_MINUTES_STEP = 15
 const ENERGY_MAX = 10
@@ -117,11 +119,18 @@ export function useSleep() {
 
   useEffect(() => { healthSnapshot.sleepHours = totalSleepHours }, [totalSleepHours])
 
+  const lastSleepRefresh = useRef(0)
+
   /** Pulls last night's sleep from the Google Health proxy (Fitbit/Google Fit data) and
    *  fills it in — but only if nothing's logged for today yet and the user hasn't already
    *  started manually editing this session, so a real Fitbit sync never clobbers a
-   *  deliberate manual entry or correction. */
+   *  deliberate manual entry or correction. Hard-throttled to at most once per
+   *  SLEEP_REFRESH_MIN_GAP_MS regardless of how often something tries to call it — see
+   *  the matching comment on useWorkout's refreshSteps for why that guard exists. */
   const refreshFitbitSleep = () => {
+    const now = Date.now()
+    if (now - lastSleepRefresh.current < SLEEP_REFRESH_MIN_GAP_MS) return
+    lastSleepRefresh.current = now
     setSleepStatus(prev => (prev === 'connected' ? prev : 'loading'))
     fetchSleepHours(getToday())
       .then(hours => {
@@ -138,9 +147,21 @@ export function useSleep() {
       })
   }
 
+  // Same staleness problem as steps: this hook lives at the app root and never
+  // remounts, so a fetch-once-on-load would freeze the number for the rest of the
+  // session — re-pull on returning to the foreground, and every 10 minutes regardless.
   useEffect(() => {
     if (!loaded || !user) return
     refreshFitbitSleep()
+    const onVisible = () => { if (document.visibilityState === 'visible') refreshFitbitSleep() }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    const id = setInterval(refreshFitbitSleep, SLEEP_REFRESH_INTERVAL_MS)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+      clearInterval(id)
+    }
   }, [loaded, user])
 
   // Auto-save 600ms after last user-initiated change (not on initial load)
