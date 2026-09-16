@@ -9,8 +9,6 @@ import { convertWeightValue } from '@/lib/units'
 import { fetchSteps, getGoogleHealthAuthUrl, GoogleHealthNotConnectedError } from '@/lib/googleHealth'
 
 const WORKOUT_DRAFT_KEY = 'venturegain:workoutDraft'
-const STEPS_REFRESH_INTERVAL_MS = 10 * 60 * 1000
-const STEPS_REFRESH_MIN_GAP_MS = 60 * 1000
 
 interface WorkoutDraft {
   date: string
@@ -296,19 +294,10 @@ export function useWorkout() {
   useEffect(() => { healthSnapshot.energyLevel = energyLevel }, [energyLevel])
   useEffect(() => { healthSnapshot.steps = steps }, [steps])
 
-  const lastStepsRefresh = useRef(0)
-
   /** Pulls today's step count from the Google Health proxy (Fitbit/Google Fit data,
    *  server-side OAuth — see /api/google-health-steps) and persists it alongside the
-   *  rest of today's row so it's available even before the next successful fetch.
-   *  Hard-throttled to at most once per STEPS_REFRESH_MIN_GAP_MS regardless of how
-   *  often something tries to call it — the visibility/focus listeners below can't
-   *  be trusted to fire at a sane rate in every environment, and this is a real
-   *  external API with real quota, not a free local read. */
+   *  rest of today's row so it's available even before the next successful fetch. */
   const refreshSteps = () => {
-    const now = Date.now()
-    if (now - lastStepsRefresh.current < STEPS_REFRESH_MIN_GAP_MS) return
-    lastStepsRefresh.current = now
     setStepsStatus(prev => (prev === 'connected' ? prev : 'loading'))
     fetchSteps(getToday())
       .then(count => {
@@ -321,21 +310,9 @@ export function useWorkout() {
       })
   }
 
-  // Steps go stale fast (this provider never remounts, so a fetch-once-on-load would
-  // freeze the number for the rest of the session) — re-pull on returning to the
-  // foreground, and every 10 minutes while the app stays open regardless.
   useEffect(() => {
     if (!loaded || !user) return
     refreshSteps()
-    const onVisible = () => { if (document.visibilityState === 'visible') refreshSteps() }
-    document.addEventListener('visibilitychange', onVisible)
-    window.addEventListener('focus', onVisible)
-    const id = setInterval(refreshSteps, STEPS_REFRESH_INTERVAL_MS)
-    return () => {
-      document.removeEventListener('visibilitychange', onVisible)
-      window.removeEventListener('focus', onVisible)
-      clearInterval(id)
-    }
   }, [loaded, user])
 
   // Mirror the in-progress (not-yet-logged) exercise to localStorage so it survives
