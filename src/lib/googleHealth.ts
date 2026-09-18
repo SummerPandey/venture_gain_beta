@@ -1,7 +1,12 @@
 const CALLBACK_PATH = '/api/google-health-callback'
+// Every readonly scope this app might reasonably want from a Fitbit/Google Health
+// account, requested together so a single reconnect covers steps, sleep, AND
+// whatever gets built next (heart rate, resting HR, weight, body fat, HRV all live
+// under health_metrics_and_measurements) — no separate reconnect-for-a-new-scope later.
 const HEALTH_SCOPES = [
   'https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly',
   'https://www.googleapis.com/auth/googlehealth.sleep.readonly',
+  'https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly',
 ].join(' ')
 
 /** Google's consent screen for connecting a Fitbit/Google Health account. Redirects back
@@ -9,7 +14,7 @@ const HEALTH_SCOPES = [
  *  it once for manual setup — see the setup checklist. `prompt=consent` forces Google to
  *  reissue a refresh token every time (needed since re-connecting is a recurring step while
  *  the OAuth app stays in "Testing" mode, where refresh tokens expire after ~7 days — and
- *  also needed once now, to upgrade an existing token to cover both scopes). */
+ *  also needed once now, to upgrade an existing token to cover all three scopes). */
 export function getGoogleHealthAuthUrl(): string {
   const clientId = import.meta.env.VITE_GOOGLE_HEALTH_CLIENT_ID ?? ''
   const redirectUri = `${window.location.origin}${CALLBACK_PATH}`
