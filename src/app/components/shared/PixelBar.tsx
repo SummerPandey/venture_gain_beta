@@ -24,6 +24,7 @@ const GRADIENT_MAP: Record<string, string> = {
   '#C4856A': '#DDA882',
   '#8BAF8C': '#A8C8A8',
   '#E8829F': '#F5B8CE',
+  '#8B2020': '#C4544A',
 }
 
 export function PixelBar({

@@ -223,6 +223,115 @@ function devGoogleHealthSleepProxy({ clientId, clientSecret, refreshToken }: Goo
   }
 }
 
+const GOOGLE_CARDIO_URL = 'https://health.googleapis.com/v4/users/me/dataTypes/active-zone-minutes/dataPoints:dailyRollUp'
+const GOOGLE_CALORIES_URL = 'https://health.googleapis.com/v4/users/me/dataTypes/total-calories/dataPoints:dailyRollUp'
+
+/**
+ * Dev-only: mirror the production /api/google-health-cardio serverless function so
+ * `npm run dev` keeps working. Minutes in Fitbit's cardio heart-rate zone today.
+ */
+function devGoogleHealthCardioProxy({ clientId, clientSecret, refreshToken }: GoogleHealthEnv): Plugin {
+  return {
+    name: 'dev-google-health-cardio-proxy',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/api/google-health-cardio', (req, res) => {
+        if (req.method !== 'GET') { res.statusCode = 405; res.end(JSON.stringify({ error: 'Method not allowed' })); return }
+        res.setHeader('Content-Type', 'application/json')
+        if (!clientId || !clientSecret || !refreshToken) { res.statusCode = 428; res.end(JSON.stringify({ error: 'Google Health not connected' })); return }
+
+        const params = new URLSearchParams(req.url?.split('?')[1] ?? '')
+        const date = params.get('date') ?? ''
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date)
+        if (!match) { res.statusCode = 400; res.end(JSON.stringify({ error: 'date query param must be YYYY-MM-DD' })); return }
+        const year = Number(match[1]), month = Number(match[2]), day = Number(match[3])
+        const start = { date: { year, month, day } }
+        const end = { date: nextDay(year, month, day) }
+        ;(async () => {
+          try {
+            const tokenRes = await fetch(GOOGLE_TOKEN_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken, grant_type: 'refresh_token' }),
+            })
+            const tokenData = await tokenRes.json()
+            if (!tokenRes.ok || !tokenData.access_token) throw new Error(tokenData.error_description ?? tokenData.error ?? 'Google token refresh failed')
+
+            const upstream = await fetch(GOOGLE_CARDIO_URL, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${tokenData.access_token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ range: { start, end }, windowSizeDays: 1 }),
+            })
+            const data = await upstream.json()
+            if (!upstream.ok) { res.statusCode = upstream.status; res.end(JSON.stringify({ error: data.error?.message ?? 'Google Health request failed' })); return }
+
+            const points: { activeZoneMinutes?: { sumInCardioHeartZone?: string } }[] = data.rollupDataPoints ?? []
+            const minutes = points.reduce((sum, p) => sum + Number(p.activeZoneMinutes?.sumInCardioHeartZone ?? 0), 0)
+            res.statusCode = 200
+            res.end(JSON.stringify({ minutes: Math.round(minutes) }))
+          } catch (e) {
+            res.statusCode = 502
+            res.end(JSON.stringify({ error: e instanceof Error ? e.message : 'Google Health request failed' }))
+          }
+        })()
+      })
+    },
+  }
+}
+
+/**
+ * Dev-only: mirror the production /api/google-health-calories serverless function so
+ * `npm run dev` keeps working. Total calories burned today (BMR + activity).
+ */
+function devGoogleHealthCaloriesProxy({ clientId, clientSecret, refreshToken }: GoogleHealthEnv): Plugin {
+  return {
+    name: 'dev-google-health-calories-proxy',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/api/google-health-calories', (req, res) => {
+        if (req.method !== 'GET') { res.statusCode = 405; res.end(JSON.stringify({ error: 'Method not allowed' })); return }
+        res.setHeader('Content-Type', 'application/json')
+        if (!clientId || !clientSecret || !refreshToken) { res.statusCode = 428; res.end(JSON.stringify({ error: 'Google Health not connected' })); return }
+
+        const params = new URLSearchParams(req.url?.split('?')[1] ?? '')
+        const date = params.get('date') ?? ''
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date)
+        if (!match) { res.statusCode = 400; res.end(JSON.stringify({ error: 'date query param must be YYYY-MM-DD' })); return }
+        const year = Number(match[1]), month = Number(match[2]), day = Number(match[3])
+        const start = { date: { year, month, day } }
+        const end = { date: nextDay(year, month, day) }
+        ;(async () => {
+          try {
+            const tokenRes = await fetch(GOOGLE_TOKEN_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken, grant_type: 'refresh_token' }),
+            })
+            const tokenData = await tokenRes.json()
+            if (!tokenRes.ok || !tokenData.access_token) throw new Error(tokenData.error_description ?? tokenData.error ?? 'Google token refresh failed')
+
+            const upstream = await fetch(GOOGLE_CALORIES_URL, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${tokenData.access_token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ range: { start, end }, windowSizeDays: 1 }),
+            })
+            const data = await upstream.json()
+            if (!upstream.ok) { res.statusCode = upstream.status; res.end(JSON.stringify({ error: data.error?.message ?? 'Google Health request failed' })); return }
+
+            const points: { totalCalories?: { kcalSum?: number } }[] = data.rollupDataPoints ?? []
+            const kcal = points.reduce((sum, p) => sum + (p.totalCalories?.kcalSum ?? 0), 0)
+            res.statusCode = 200
+            res.end(JSON.stringify({ kcal: Math.round(kcal) }))
+          } catch (e) {
+            res.statusCode = 502
+            res.end(JSON.stringify({ error: e instanceof Error ? e.message : 'Google Health request failed' }))
+          }
+        })()
+      })
+    },
+  }
+}
+
 /**
  * Dev-only: mirror the production /api/google-health-callback serverless function so the
  * "Connect Fitbit" OAuth flow can be completed against `npm run dev` too.
@@ -279,6 +388,16 @@ export default defineConfig(({ mode }) => {
         refreshToken: env.GOOGLE_HEALTH_REFRESH_TOKEN,
       }),
       devGoogleHealthSleepProxy({
+        clientId: env.GOOGLE_HEALTH_CLIENT_ID,
+        clientSecret: env.GOOGLE_HEALTH_CLIENT_SECRET,
+        refreshToken: env.GOOGLE_HEALTH_REFRESH_TOKEN,
+      }),
+      devGoogleHealthCardioProxy({
+        clientId: env.GOOGLE_HEALTH_CLIENT_ID,
+        clientSecret: env.GOOGLE_HEALTH_CLIENT_SECRET,
+        refreshToken: env.GOOGLE_HEALTH_REFRESH_TOKEN,
+      }),
+      devGoogleHealthCaloriesProxy({
         clientId: env.GOOGLE_HEALTH_CLIENT_ID,
         clientSecret: env.GOOGLE_HEALTH_CLIENT_SECRET,
         refreshToken: env.GOOGLE_HEALTH_REFRESH_TOKEN,

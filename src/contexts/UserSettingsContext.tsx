@@ -10,7 +10,6 @@ export interface UserSettings {
   cardioTarget: number
   weightKg: number
   heightCm: number
-  streakDays: number
   avatar: string
   defaultWeightUnit: WeightUnit
 }
@@ -22,7 +21,6 @@ export const DEFAULT_SETTINGS: UserSettings = {
   cardioTarget: 120,
   weightKg: 70,
   heightCm: 175,
-  streakDays: 0,
   avatar: 'chimchar',
   defaultWeightUnit: 'kg',
 }
@@ -53,7 +51,6 @@ function buildRow(userId: string, s: UserSettings) {
     cardio_target:   s.cardioTarget,
     weight_kg:       s.weightKg,
     height_cm:       s.heightCm,
-    streak_days:     s.streakDays,
     avatar:          s.avatar,
     updated_at:      new Date().toISOString(),
   }
@@ -70,7 +67,7 @@ export function UserSettingsProvider({ children }: { children: ReactNode }) {
     const seenKey = `vg_onboarding_seen_${user.id}`
     supabase
       .from('user_profiles')
-      .select('water_target,calories_target,protein_target,cardio_target,weight_kg,height_cm,streak_days,avatar')
+      .select('water_target,calories_target,protein_target,cardio_target,weight_kg,height_cm,avatar')
       .eq('user_id', user.id)
       .maybeSingle()
       .then(({ data }) => {
@@ -83,7 +80,6 @@ export function UserSettingsProvider({ children }: { children: ReactNode }) {
             cardioTarget:   Number(data.cardio_target)   || DEFAULT_SETTINGS.cardioTarget,
             weightKg:       Number(data.weight_kg)       || DEFAULT_SETTINGS.weightKg,
             heightCm:       Number(data.height_cm)       || DEFAULT_SETTINGS.heightCm,
-            streakDays:     Number(data.streak_days)     || 0,
             avatar:         data.avatar                  ?? DEFAULT_SETTINGS.avatar,
           }))
           // Profile exists — mark as seen so onboarding never fires again

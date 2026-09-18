@@ -6,7 +6,7 @@ import { supabase, getToday } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { useUserSettings } from '@/contexts/UserSettingsContext'
 import { convertWeightValue } from '@/lib/units'
-import { fetchSteps, getGoogleHealthAuthUrl, GoogleHealthNotConnectedError } from '@/lib/googleHealth'
+import { fetchSteps, fetchCardioMinutes, GoogleHealthNotConnectedError } from '@/lib/googleHealth'
 
 const WORKOUT_DRAFT_KEY = 'venturegain:workoutDraft'
 
@@ -85,6 +85,8 @@ export function useWorkout() {
   const [cardioMinutes, setCardioMinutes] = useState(0)
   const [steps, setSteps] = useState(0)
   const [stepsStatus, setStepsStatus] = useState<'loading' | 'connected' | 'not_connected' | 'error'>('loading')
+  const [fitbitCardioMinutes, setFitbitCardioMinutes] = useState(0)
+  const [fitbitCardioStatus, setFitbitCardioStatus] = useState<'loading' | 'connected' | 'not_connected' | 'error'>('loading')
   const [todayWorkouts, setTodayWorkouts] = useState<WorkoutEntry[]>([])
   const [uploadedImage, setUploadedImage] = useState<string | null>(null)
   const [initialDraft] = useState(() => readWorkoutDraft())
@@ -315,6 +317,25 @@ export function useWorkout() {
     refreshSteps()
   }, [loaded, user])
 
+  /** Pulls today's minutes in Fitbit's cardio heart-rate zone — a real-data companion
+   *  to the self-reported cardio stepper above, not a replacement for it. */
+  const refreshFitbitCardio = () => {
+    setFitbitCardioStatus(prev => (prev === 'connected' ? prev : 'loading'))
+    fetchCardioMinutes(getToday())
+      .then(minutes => {
+        setFitbitCardioMinutes(minutes)
+        setFitbitCardioStatus('connected')
+      })
+      .catch(e => {
+        setFitbitCardioStatus(e instanceof GoogleHealthNotConnectedError ? 'not_connected' : 'error')
+      })
+  }
+
+  useEffect(() => {
+    if (!loaded || !user) return
+    refreshFitbitCardio()
+  }, [loaded, user])
+
   // Mirror the in-progress (not-yet-logged) exercise to localStorage so it survives
   // the PWA getting backgrounded and reclaimed mid-session — see readWorkoutDraft().
   useEffect(() => {
@@ -518,7 +539,8 @@ export function useWorkout() {
 
   return {
     workoutLevel, energyLevel, cardioMinutes, weeklyCardioMinutes,
-    steps, stepsStatus, refreshSteps, connectStepsUrl: getGoogleHealthAuthUrl(),
+    steps, stepsStatus, refreshSteps,
+    fitbitCardioMinutes, fitbitCardioStatus,
     cardioTarget: settings.cardioTarget,
     uploadedImage, selectedExercise, setSelectedExercise,
     trackingMode, setTrackingMode,

@@ -54,3 +54,23 @@ export async function fetchSleepHours(date: string): Promise<number> {
   const data = (await res.json()) as { hours: number }
   return data.hours
 }
+
+/** Fetches minutes spent today in Fitbit's cardio heart-rate zone via the server-side
+ *  /api/google-health-cardio proxy. Same connection/error semantics as fetchSteps. */
+export async function fetchCardioMinutes(date: string): Promise<number> {
+  const res = await fetch(`/api/google-health-cardio?date=${date}`)
+  if (res.status === 428) throw new GoogleHealthNotConnectedError('Google Health not connected')
+  if (!res.ok) throw new Error(`Cardio fetch failed (${res.status})`)
+  const data = (await res.json()) as { minutes: number }
+  return data.minutes
+}
+
+/** Fetches total calories burned today (BMR + activity) via the server-side
+ *  /api/google-health-calories proxy. Same connection/error semantics as fetchSteps. */
+export async function fetchCaloriesBurned(date: string): Promise<number> {
+  const res = await fetch(`/api/google-health-calories?date=${date}`)
+  if (res.status === 428) throw new GoogleHealthNotConnectedError('Google Health not connected')
+  if (!res.ok) throw new Error(`Calories fetch failed (${res.status})`)
+  const data = (await res.json()) as { kcal: number }
+  return data.kcal
+}

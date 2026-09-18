@@ -1,13 +1,13 @@
 import React, { useState, useMemo, useRef } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, LineChart, Line } from 'recharts'
-import { Dumbbell, TrendingUp, Target, Award, Activity, ChevronUp, Zap, Plus, Minus, X, Camera, Mic, FolderOpen, Check, MessageCircle, Send, Moon, Footprints } from 'lucide-react'
+import { Dumbbell, TrendingUp, Target, Award, Activity, ChevronUp, Zap, Plus, Minus, X, Camera, Mic, FolderOpen, Check, MessageCircle, Send, Moon } from 'lucide-react'
 import { PixelBar } from '@/app/components/shared'
 import { useHealthData } from '@/contexts/HealthDataContext'
 import { groqText, groqChat, parseAIJson } from '@/lib/groq'
 import { geminiVision } from '@/lib/gemini'
 import { healthSnapshot } from '@/store/healthSnapshot'
 import type { DayLog } from '@/hooks/useWorkout'
-import { CARDIO_MAX_MINUTES, STEPS_GOAL } from '@/constants'
+import { CARDIO_MAX_MINUTES, STEPS_GOAL, FITBIT_CARDIO_GOAL_MINUTES } from '@/constants'
 import { TRAINING_CATEGORIES } from '@/constants/trainingCategories'
 import type { ExerciseProgress, WorkoutSet, WorkoutEntry, WeightUnit } from '@/types'
 import { toggleKgLbs, unitLabel, toKgValue, toggleSetsUnit } from '@/lib/units'
@@ -72,7 +72,8 @@ const BTN_BASE = { background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%
 export function WorkoutTab({ onEnterWorkoutMode }: { onEnterWorkoutMode?: () => void } = {}) {
   const {
     cardioMinutes, weeklyCardioMinutes, cardioTarget,
-    steps, stepsStatus, connectStepsUrl,
+    steps, stepsStatus,
+    fitbitCardioMinutes, fitbitCardioStatus,
     uploadedImage, selectedExercise, setSelectedExercise,
     trackingMode, setTrackingMode,
     energyRating, setEnergyRating,
@@ -681,15 +682,7 @@ For all other messages just reply as plain text.`
 
         {/* Steps — live from Fitbit/Google Health via the server-side proxy */}
         <div className="mt-3">
-          {stepsStatus === 'not_connected' ? (
-            <a
-              href={connectStepsUrl}
-              className="monument-button w-full flex items-center justify-center gap-1.5"
-              style={{ height: 32, background: 'rgba(232,130,159,0.1)', borderRadius: 8, border: '2px dashed #E8829F', color: '#E8829F', fontSize: '9px', fontWeight: '700', textDecoration: 'none', letterSpacing: '0.5px' }}
-            >
-              <Footprints size={12} strokeWidth={2.5} /> CONNECT FITBIT FOR STEPS
-            </a>
-          ) : stepsStatus === 'error' ? (
+          {stepsStatus === 'not_connected' ? null : stepsStatus === 'error' ? (
             <div className="monument-text text-center" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', opacity: 0.7 }}>
               Couldn't reach Fitbit — steps unavailable right now
             </div>
@@ -1008,6 +1001,15 @@ For all other messages just reply as plain text.`
         </div>
         <div className="monument-text mb-2" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', textAlign: 'center' }}>today's minutes</div>
         <PixelBar label="WEEK" value={weeklyCardioMinutes} max={CARDIO_MAX_MINUTES} target={cardioTarget} color="#FFD4A8" unit="min" />
+        {fitbitCardioStatus === 'not_connected' ? null : fitbitCardioStatus === 'error' ? (
+          <div className="monument-text text-center mt-2" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', opacity: 0.6 }}>
+            Couldn't reach Fitbit — cardio unavailable right now
+          </div>
+        ) : (
+          <div className="mt-3">
+            <PixelBar label="FITBIT CARDIO" value={fitbitCardioMinutes} max={FITBIT_CARDIO_GOAL_MINUTES + 15} target={FITBIT_CARDIO_GOAL_MINUTES} color="#7BAFD4" unit="min" />
+          </div>
+        )}
       </div>
 
       {/* Charts */}

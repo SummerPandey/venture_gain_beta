@@ -8,8 +8,9 @@ import { SleepTab } from './components/features/sleep'
 import { LogTab } from './components/features/log'
 import { AuthPage } from './components/auth/AuthPage'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
-import { HealthDataProvider } from '@/contexts/HealthDataContext'
+import { HealthDataProvider, useHealthData } from '@/contexts/HealthDataContext'
 import { UserSettingsProvider, useUserSettings, AVATAR_SPRITES, type UserSettings } from '@/contexts/UserSettingsContext'
+import { getGoogleHealthAuthUrl } from '@/lib/googleHealth'
 
 interface TabConfig {
   name: string
@@ -109,6 +110,11 @@ function SettingsModal({ onClose, onboarding = false }: { onClose: () => void; o
   const { settings: saved, saveSettings } = useUserSettings()
   const [draft, setDraft] = useState<UserSettings>(saved)
   const [syncing, setSyncing] = useState(false)
+  // stepsStatus stands in for "is Fitbit connected" — steps, cardio, sleep, and
+  // calories burnt all read the same server-side token, so one succeeding means
+  // all of them are live.
+  const { stepsStatus } = useHealthData().workout
+  const fitbitConnected = stepsStatus === 'connected'
 
   const handleSave = async () => {
     setSyncing(true)
@@ -209,7 +215,28 @@ function SettingsModal({ onClose, onboarding = false }: { onClose: () => void; o
           <div className="mb-4" style={{ background: 'rgba(255,252,248,0.9)', borderRadius: '14px', border: '1.5px solid rgba(139,90,62,0.15)', overflow: 'hidden', padding: '0 14px' }}>
             <SettingsRow label="Weight" unit="kg" {...row('weightKg', 1, 20, 300)} />
             <SettingsRow label="Height" unit="cm" {...row('heightCm', 1, 100, 250)} />
-            <SettingsRow label="Streak" unit="days" {...row('streakDays', 1, 0, 9999)} />
+          </div>
+
+          {/* Connections */}
+          <SectionLabel>CONNECTIONS</SectionLabel>
+          <div className="mb-4">
+            <a
+              href={getGoogleHealthAuthUrl()}
+              className="monument-button w-full flex items-center justify-center py-3"
+              style={{
+                borderRadius: '14px',
+                textDecoration: 'none',
+                fontSize: '11px', fontWeight: '700', letterSpacing: '0.5px',
+                ...(fitbitConnected
+                  ? { background: 'rgba(139,175,140,0.15)', border: '2px solid #8BAF8C', color: '#5A8A5C', boxShadow: 'none' }
+                  : { ...BTN, color: '#6B4423' }),
+              }}
+            >
+              {fitbitConnected ? '✓ FITBIT CONNECTED — RECONNECT' : 'CONNECT TO FITBIT'}
+            </a>
+            <div className="monument-text mt-1.5 text-center" style={{ color: '#A0725A', fontSize: '8px', opacity: 0.7 }}>
+              One connection powers steps, cardio, sleep & calories burnt everywhere in the app
+            </div>
           </div>
         </div>
 

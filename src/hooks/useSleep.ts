@@ -3,7 +3,7 @@ import type { SleepState } from '@/types'
 import { healthSnapshot } from '@/store/healthSnapshot'
 import { supabase, getToday } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
-import { fetchSleepHours, getGoogleHealthAuthUrl, GoogleHealthNotConnectedError } from '@/lib/googleHealth'
+import { fetchSleepHours, GoogleHealthNotConnectedError } from '@/lib/googleHealth'
 
 const SLEEP_HOURS_MAX = 12
 const SLEEP_MINUTES_MAX = 59
@@ -176,7 +176,7 @@ export function useSleep() {
     state,
     totalSleepHours,
     loaded,
-    sleepStatus, fitbitSynced, connectSleepUrl: getGoogleHealthAuthUrl(),
+    sleepStatus, fitbitSynced,
     weeklyChartData,
     constants: { hoursMax: SLEEP_HOURS_MAX, minutesMax: SLEEP_MINUTES_MAX, minutesStep: SLEEP_MINUTES_STEP, energyMax: ENERGY_MAX },
     adjustSleepHours, setSleepHours,

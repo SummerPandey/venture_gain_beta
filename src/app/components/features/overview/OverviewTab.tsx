@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { RadarChart, PolarGrid, PolarAngleAxis, Radar, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts'
 import { ChevronLeft, ChevronRight, X, Moon } from 'lucide-react'
-import { LEVEL, CURRENT_MOMENTUM, NEXT_LEVEL_MOMENTUM, TIER_THRESHOLDS } from '@/constants'
+import { LEVEL, CURRENT_MOMENTUM, NEXT_LEVEL_MOMENTUM, TIER_THRESHOLDS, getStreakDays } from '@/constants'
 import type { WorkoutEntry } from '@/types'
 import { SUPPLEMENT_MOMENTUM_PER_VITAMIN } from '@/hooks/useNutrition'
 import { useHealthData } from '@/contexts/HealthDataContext'
@@ -313,9 +313,9 @@ export function OverviewTab() {
     return { sessions, bestWeight, bestEnergy, goal, isWeights, chartData }
   }, [selectedExercise, historicalLogs])
 
-  const streakDays = settings.streakDays
-  const streakYearsCompleted = streakDays > 0 ? Math.floor(streakDays / 365) : 0
-  const daysToNextYear = streakDays > 0 ? 365 - (streakDays % 365) : null
+  const streakDays = getStreakDays()
+  const streakYearsCompleted = Math.floor(streakDays / 365)
+  const daysToNextYear = 365 - (streakDays % 365)
 
   const mood = useMemo((): ChimcharMood => {
     let w: number, e: number, s: number, h: number, f: number
@@ -402,17 +402,13 @@ export function OverviewTab() {
         <div className="monument-card p-4 text-center">
           <div className="monument-text mb-1" style={{ color: '#A0725A', fontSize: '8px', fontWeight: '700', letterSpacing: '1px' }}>STREAK</div>
           <div className="monument-text" style={{ color: '#FF9F66', fontSize: '22px', fontWeight: '800', lineHeight: 1, textShadow: '0 2px 8px rgba(255, 184, 138, 0.3)' }}>
-            {streakDays > 0 ? streakDays : '—'}
+            {streakDays}
           </div>
           <div className="monument-text mb-3" style={{ color: '#A0725A', fontSize: '8px', fontWeight: '700', letterSpacing: '1px' }}>DAYS</div>
-          {daysToNextYear !== null && (
-            <>
-              <div style={{ height: '1px', background: 'rgba(139, 90, 62, 0.15)', marginBottom: '10px' }} />
-              <div className="monument-text" style={{ color: '#6B4423', fontSize: '18px', fontWeight: '800', lineHeight: 1 }}>{daysToNextYear}</div>
-              <div className="monument-text mt-1" style={{ color: '#A0725A', fontSize: '7px', fontWeight: '700', letterSpacing: '0.8px' }}>DAYS TO</div>
-              <div className="monument-text" style={{ color: '#A0725A', fontSize: '7px', fontWeight: '700', letterSpacing: '0.8px' }}>YEAR {streakYearsCompleted + 1}</div>
-            </>
-          )}
+          <div style={{ height: '1px', background: 'rgba(139, 90, 62, 0.15)', marginBottom: '10px' }} />
+          <div className="monument-text" style={{ color: '#6B4423', fontSize: '18px', fontWeight: '800', lineHeight: 1 }}>{daysToNextYear}</div>
+          <div className="monument-text mt-1" style={{ color: '#A0725A', fontSize: '7px', fontWeight: '700', letterSpacing: '0.8px' }}>DAYS TO</div>
+          <div className="monument-text" style={{ color: '#A0725A', fontSize: '7px', fontWeight: '700', letterSpacing: '0.8px' }}>YEAR {streakYearsCompleted + 1}</div>
         </div>
       </div>
 

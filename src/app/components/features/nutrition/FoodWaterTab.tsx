@@ -128,6 +128,7 @@ function readFoodScanDraft(): FoodScanDraft | null {
 export function FoodWaterTab() {
   const {
     state, limits, steps, maxes,
+    caloriesBurned, caloriesBurnedStatus,
     adjustWater, setWater,
     adjustCalories, setCalories,
     adjustProtein, setProtein,
@@ -642,6 +643,15 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
           unit=""
         />
         {caloriesExceeded && <LimitWarning message="CALORIE LIMIT EXCEEDED" />}
+        {caloriesBurnedStatus === 'not_connected' ? null : caloriesBurnedStatus === 'error' ? (
+          <div className="monument-text text-center mt-2" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', opacity: 0.6 }}>
+            Couldn't reach Fitbit — calories burnt unavailable right now
+          </div>
+        ) : (
+          <div className="mt-3">
+            <PixelBar label="CALORIES BURNT" value={caloriesBurned} max={maxes.calories} color="#8B2020" unit="" />
+          </div>
+        )}
       </div>
 
       {/* Protein */}

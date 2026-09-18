@@ -9,6 +9,7 @@ import { healthSnapshot } from '@/store/healthSnapshot'
 import { supabase, getToday } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { useUserSettings } from '@/contexts/UserSettingsContext'
+import { fetchCaloriesBurned, GoogleHealthNotConnectedError } from '@/lib/googleHealth'
 
 export const SUPPLEMENT_MOMENTUM_PER_VITAMIN = 5
 
@@ -50,6 +51,8 @@ export function useNutrition() {
     uploadedImage: null,
   })
   const [loaded, setLoaded] = useState(false)
+  const [caloriesBurned, setCaloriesBurned] = useState(0)
+  const [caloriesBurnedStatus, setCaloriesBurnedStatus] = useState<'loading' | 'connected' | 'not_connected' | 'error'>('loading')
 
   const [weeklyMultivitamins, setWeeklyMultivitamins] = useState(0)
   const [todayMultivitamins, setTodayMultivitamins] = useState(0)
@@ -191,6 +194,25 @@ export function useNutrition() {
   useEffect(() => { healthSnapshot.waterLiters = state.waterLiters }, [state.waterLiters])
   useEffect(() => { healthSnapshot.calories = state.calories }, [state.calories])
 
+  /** Pulls today's total calories burned (BMR + activity) from the Google Health proxy
+   *  — an informational read next to calories eaten, not something the user edits. */
+  const refreshFitbitCalories = () => {
+    setCaloriesBurnedStatus(prev => (prev === 'connected' ? prev : 'loading'))
+    fetchCaloriesBurned(getToday())
+      .then(kcal => {
+        setCaloriesBurned(kcal)
+        setCaloriesBurnedStatus('connected')
+      })
+      .catch(e => {
+        setCaloriesBurnedStatus(e instanceof GoogleHealthNotConnectedError ? 'not_connected' : 'error')
+      })
+  }
+
+  useEffect(() => {
+    if (!loaded || !user) return
+    refreshFitbitCalories()
+  }, [loaded, user])
+
   useEffect(() => {
     if (!celebration) return
     const t = setTimeout(() => setCelebration(null), 2500)
@@ -311,6 +333,7 @@ export function useNutrition() {
   return {
     state,
     loaded,
+    caloriesBurned, caloriesBurnedStatus,
     limits: dynamicLimits,
     steps: { water: WATER_STEP, calories: CALORIES_STEP, protein: PROTEIN_STEP, sugar: SUGAR_STEP },
     maxes: { water: WATER_MAX, calories: CALORIES_MAX, protein: PROTEIN_MAX, sugar: SUGAR_MAX },
