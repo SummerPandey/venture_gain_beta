@@ -349,8 +349,9 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
       const desc = parsed.description ?? null
       const note = parsed.servingNote ? ` · ${parsed.servingNote}` : ''
       setScanDescription(desc ? `${desc}${note}` : null)
-    } catch {
-      setScanError('Could not read this image')
+    } catch (err) {
+      console.error('AI scan failed:', err)
+      setScanError(err instanceof Error ? err.message : 'Could not read this image')
     } finally {
       setScanLoading(false)
     }
