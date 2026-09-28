@@ -32,14 +32,16 @@ async function callGemini(base64: string, mimeType: string, prompt: string) {
 
 /**
  * Image (base64) + text prompt → response string.
- * Flash is a shared free-tier model that occasionally returns 503 "model
- * overloaded" under load — that's transient, so retry once before surfacing
- * it as an error.
+ * Flash-lite is a shared free-tier model that occasionally returns 503 "model
+ * overloaded" under load — that's transient, so retry a few times with
+ * backoff before surfacing it as an error.
  */
 export async function geminiVision(base64: string, mimeType: string, prompt: string): Promise<string> {
+  const delaysMs = [1500, 3000, 5000]
   let result = await callGemini(base64, mimeType, prompt)
-  if (!result.ok && result.status === 503) {
-    await sleep(1500)
+  for (const delay of delaysMs) {
+    if (result.ok || result.status !== 503) break
+    await sleep(delay)
     result = await callGemini(base64, mimeType, prompt)
   }
   if (!result.ok) {
