@@ -600,7 +600,7 @@ For all other messages just reply as plain text.`
       )}
 
       {uploadedImage && (
-        <div className="monument-card p-4 mb-6">
+        <div className="monument-card p-4 mb-6 relative" style={{ zIndex: 41 }}>
           {/* Header */}
           <div className="flex justify-between items-center mb-3">
             <div>
@@ -658,7 +658,7 @@ For all other messages just reply as plain text.`
       )}
 
       {/* Level Bars — compact, derived from actual workout data */}
-      <div className="monument-card px-4 py-3 mb-4">
+      <div className="monument-card px-4 py-3 mb-4 relative" style={{ zIndex: 41 }}>
         <div className="flex items-center justify-between mb-1">
           <div className="flex items-center gap-1.5">
             <Dumbbell size={13} strokeWidth={2.5} color="#FF9F66" />
@@ -699,7 +699,7 @@ For all other messages just reply as plain text.`
       </div>
 
       {/* Today's Workouts Card */}
-      <div className="monument-card p-4 mb-4">
+      <div className="monument-card p-4 mb-4 relative" style={{ zIndex: 41 }}>
 
         {/* Header row */}
         <div className="flex items-center justify-between mb-3">
@@ -978,7 +978,7 @@ For all other messages just reply as plain text.`
       </div>
 
       {/* Cardio */}
-      <div className="monument-card p-4 mb-4">
+      <div className="monument-card p-4 mb-4 relative" style={{ zIndex: 41 }}>
         <div className="flex items-center gap-2 mb-3">
           <Activity size={15} strokeWidth={2.5} color="#FFD4A8" />
           <span className="monument-text" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>Cardio</span>
@@ -1013,7 +1013,7 @@ For all other messages just reply as plain text.`
       </div>
 
       {/* Charts */}
-      <div className="monument-card p-4 mb-4">
+      <div className="monument-card p-4 mb-4 relative" style={{ zIndex: 41 }}>
         <div className="monument-text mb-3" style={{ color: '#6B4423', fontSize: '11px', fontWeight: '700' }}>Weekly Volume</div>
         {hasVolumeData ? (
           <ResponsiveContainer width="100%" height={160}>

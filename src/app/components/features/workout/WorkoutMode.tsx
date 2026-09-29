@@ -81,7 +81,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
 
       {/* Today's workout cards */}
       {todayWorkouts.length === 0 ? (
-        <div className="monument-card p-8 text-center">
+        <div className="monument-card p-8 text-center relative" style={{ zIndex: 41 }}>
           <div className="flex items-center justify-center mb-3" style={{ width: 56, height: 56, borderRadius: '50%', background: 'linear-gradient(135deg,#FF9F66,#FFB88A)', border: '2.5px solid #8B5A3E', margin: '0 auto 12px' }}>
               <Dumbbell size={26} strokeWidth={2.5} color="#6B4423" />
             </div>
@@ -105,8 +105,8 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
             return (
               <div
                 key={i}
-                className="monument-card overflow-hidden"
-                style={{ boxShadow: `0 4px 16px ${cat?.shadow ?? 'rgba(255,159,102,0.2)'}` }}
+                className="monument-card overflow-hidden relative"
+                style={{ boxShadow: `0 4px 16px ${cat?.shadow ?? 'rgba(255,159,102,0.2)'}`, zIndex: 41 }}
               >
                 {/* Colored accent bar */}
                 <div style={{ height: 4, background: cat?.gradient ?? 'linear-gradient(135deg,#FF9F66,#FFB88A)' }} />
@@ -247,7 +247,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
       </div>
 
       {daysForCategory.length === 0 ? (
-        <div className="monument-card p-10 text-center">
+        <div className="monument-card p-10 text-center relative" style={{ zIndex: 41 }}>
           <div className="flex items-center justify-center mb-3" style={{ width: 52, height: 52, borderRadius: '50%', background: 'rgba(255,159,102,0.15)', border: '2px solid rgba(255,159,102,0.4)', margin: '0 auto 12px' }}>
             <Calendar size={24} strokeWidth={2.5} color="#FF9F66" />
           </div>
@@ -268,7 +268,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
             const gradient = isRest ? 'linear-gradient(135deg,#9B7FC8,#B89FDE)' : (catData?.gradient ?? 'linear-gradient(135deg,#FF9F66,#FFB88A)')
 
             return (
-              <div key={day.date} className="monument-card overflow-hidden">
+              <div key={day.date} className="monument-card overflow-hidden relative" style={{ zIndex: 41 }}>
                 {/* Date header */}
                 <div className="flex items-center gap-3 px-4 py-3" style={{ background: `${color}10`, borderBottom: `1px solid ${color}20` }}>
                   <div style={{

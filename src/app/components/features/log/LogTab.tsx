@@ -525,7 +525,7 @@ If not a logging request: {"action":"chat"}`
       {activeView === 'log' && (
         <>
           {/* Month Nav */}
-          <div className="monument-card p-5 mb-4">
+          <div className="monument-card p-5 mb-4 relative" style={{ zIndex: 41 }}>
             <div className="flex justify-between items-center">
               <button onClick={goToPrevMonth} className="monument-button p-2" style={{ background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '10px', border: '2px solid #8B5A3E', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)' }}>
                 <ChevronLeft size={18} strokeWidth={2.5} color="#6B4423" />
@@ -574,10 +574,11 @@ If not a logging request: {"action":"chat"}`
                           <div
                             key={day}
                             onClick={() => openDayModal(day)}
-                            className="monument-card p-3 cursor-pointer hover:opacity-80 transition-all"
+                            className="monument-card p-3 cursor-pointer hover:opacity-80 transition-all relative"
                             style={{
                               background: isToday ? 'linear-gradient(135deg, rgba(255, 159, 102, 0.3) 0%, rgba(255, 184, 138, 0.3) 100%)' : data ? 'rgba(255, 159, 102, 0.15)' : 'rgba(255, 252, 248, 0.5)',
                               boxShadow: isToday ? '0 4px 0 rgba(139, 90, 62, 0.25), 0 0 16px rgba(255, 184, 138, 0.2)' : '0 2px 0 rgba(139, 90, 62, 0.15)',
+                              zIndex: 41,
                             }}
                           >
                             <div className="flex justify-between items-center gap-2">
@@ -652,7 +653,7 @@ If not a logging request: {"action":"chat"}`
           </div>
 
           {/* Score Card */}
-          <div className="monument-card p-6 mb-6 text-center">
+          <div className="monument-card p-6 mb-6 text-center relative" style={{ zIndex: 41 }}>
             <div className="monument-text mb-2" style={{ color: '#8B5A3E', fontSize: '11px', fontWeight: '700' }}>
               {selectedCategory.toUpperCase()} — {selectedPeriod.toUpperCase()}
             </div>
@@ -668,7 +669,7 @@ If not a logging request: {"action":"chat"}`
           </div>
 
           {/* AI Insights */}
-          <div className="monument-card p-5">
+          <div className="monument-card p-5 relative" style={{ zIndex: 41 }}>
             <div className="flex justify-between items-center cursor-pointer hover:opacity-80 transition-all mb-4" onClick={() => setShowInsights(!showInsights)}>
               <div className="monument-text text-center flex-1" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>AI INSIGHTS</div>
               {showInsights ? <ChevronUp size={18} strokeWidth={2.5} color="#6B4423" /> : <ChevronDown size={18} strokeWidth={2.5} color="#6B4423" />}

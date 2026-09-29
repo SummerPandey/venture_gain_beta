@@ -420,7 +420,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
       )}
 
       {state.uploadedImage && (
-        <div className="monument-card p-4 mb-6">
+        <div className="monument-card p-4 mb-6 relative" style={{ zIndex: 41 }}>
           {/* Header */}
           <div className="flex justify-between items-center mb-3">
             <div>
@@ -566,7 +566,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
       </div>
 
       {/* Water */}
-      <div className="monument-card p-5 mb-6">
+      <div className="monument-card p-5 mb-6 relative" style={{ zIndex: 41 }}>
         <div className="flex items-center gap-2 mb-4">
           <Droplet size={18} strokeWidth={2.5} color={waterExceeded ? '#D32F2F' : '#7BAFD4'} />
           <div className="monument-text" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>Water Intake</div>
@@ -595,7 +595,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
       </div>
 
       {/* Creatine */}
-      <div className="monument-card p-5 mb-6">
+      <div className="monument-card p-5 mb-6 relative" style={{ zIndex: 41 }}>
         <div className="flex items-center gap-2 mb-4">
           <Pill size={18} strokeWidth={2.5} color="#7BAFD4" />
           <div className="monument-text" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>Creatine</div>
@@ -620,7 +620,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
       </div>
 
       {/* Calories */}
-      <div className="monument-card p-5 mb-6">
+      <div className="monument-card p-5 mb-6 relative" style={{ zIndex: 41 }}>
         <div className="flex items-center gap-2 mb-4">
           <Flame size={18} strokeWidth={2.5} color={caloriesExceeded ? '#D32F2F' : '#E8956A'} />
           <div className="monument-text" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>Calories</div>
@@ -658,7 +658,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
       </div>
 
       {/* Protein */}
-      <div className="monument-card p-5 mb-6">
+      <div className="monument-card p-5 mb-6 relative" style={{ zIndex: 41 }}>
         <div className="flex items-center gap-2 mb-4">
           <Beef size={18} strokeWidth={2.5} color={proteinExceeded ? '#D32F2F' : '#C4856A'} />
           <div className="monument-text" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>Protein</div>
@@ -687,7 +687,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
       </div>
 
       {/* Sugar */}
-      <div className="monument-card p-5 mb-6">
+      <div className="monument-card p-5 mb-6 relative" style={{ zIndex: 41 }}>
         <div className="flex items-center gap-2 mb-4">
           <Candy size={18} strokeWidth={2.5} color={sugarExceeded ? '#D32F2F' : '#C4809A'} />
           <div className="monument-text" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>Sugar</div>
@@ -723,7 +723,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
       </div>
 
       {/* Multivitamins */}
-      <div className="monument-card p-5 mb-6">
+      <div className="monument-card p-5 mb-6 relative" style={{ zIndex: 41 }}>
         <div className="flex items-center gap-2 mb-4">
           <Pill size={18} strokeWidth={2.5} color="#8BAF8C" />
           <div className="monument-text" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>Multivitamins</div>
