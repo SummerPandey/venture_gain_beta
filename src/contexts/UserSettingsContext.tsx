@@ -100,7 +100,7 @@ export function UserSettingsProvider({ children }: { children: ReactNode }) {
         }
         setLoaded(true)
       })
-  }, [user])
+  }, [user?.id])
 
   const saveSettings = async (next: UserSettings) => {
     setSettings(next)
@@ -123,7 +123,7 @@ export function UserSettingsProvider({ children }: { children: ReactNode }) {
         if (error || !data?.default_weight_unit) return
         setSettings(prev => ({ ...prev, defaultWeightUnit: data.default_weight_unit as WeightUnit }))
       })
-  }, [user])
+  }, [user?.id])
 
   const setDefaultWeightUnit = (unit: WeightUnit) => {
     setSettings(prev => ({ ...prev, defaultWeightUnit: unit }))

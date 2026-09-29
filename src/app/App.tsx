@@ -368,7 +368,13 @@ function AppShell() {
       {/* Bottom Navigation */}
       <nav
         className="flex justify-around items-center py-3 px-2 relative"
-        style={{ background: 'rgba(255,245,230,0.95)', borderTop: '2px solid rgba(139,90,62,0.2)', backdropFilter: 'blur(10px)', zIndex: 10 }}
+        style={{
+          background: 'rgba(255,245,230,0.95)',
+          borderTop: '2px solid rgba(139,90,62,0.2)',
+          backdropFilter: 'blur(10px)',
+          zIndex: 10,
+          paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))',
+        }}
       >
         {workoutModeActive ? (
           /* ── Workout mode nav: back + Today + Previous ── */

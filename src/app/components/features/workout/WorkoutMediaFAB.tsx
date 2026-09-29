@@ -637,8 +637,9 @@ For all other messages just reply as plain text.`
       {/* Floating FAB */}
       <button
         onClick={() => setShowMediaMenu(v => !v)}
-        className="fixed bottom-24 right-6 p-4 soft-pulse monument-button"
+        className="fixed right-6 p-3 soft-pulse monument-button"
         style={{
+          bottom: 'calc(6rem + env(safe-area-inset-bottom))',
           background: 'linear-gradient(135deg,#FF9F66,#FFB88A)',
           borderRadius: '50%',
           border: '3px solid #8B5A3E',
@@ -648,7 +649,7 @@ For all other messages just reply as plain text.`
           transition: 'transform 0.2s ease',
         }}
       >
-        <ChevronUp size={28} strokeWidth={2.5} color="#6B4423" />
+        <ChevronUp size={24} strokeWidth={2.5} color="#6B4423" />
       </button>
     </>
   )

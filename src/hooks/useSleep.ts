@@ -82,7 +82,7 @@ export function useSleep() {
   useEffect(() => {
     if (!user) { setLoaded(true); return }
     loadAll(user.id)
-  }, [user])
+  }, [user?.id])
 
   // Reload when the app returns to the foreground on a new calendar day, so the
   // previous day's energy/sleep don't carry over into today.
@@ -141,7 +141,7 @@ export function useSleep() {
   useEffect(() => {
     if (!loaded || !user) return
     refreshFitbitSleep()
-  }, [loaded, user])
+  }, [loaded, user?.id])
 
   // Auto-save 600ms after last user-initiated change (not on initial load)
   useEffect(() => {
@@ -154,7 +154,7 @@ export function useSleep() {
       pendingSleep.current = null
     }, 600)
     return () => clearTimeout(id)
-  }, [state.sleepHours, state.sleepMinutes, state.energyLevel, loaded, user])
+  }, [state.sleepHours, state.sleepMinutes, state.energyLevel, loaded, user?.id])
 
   // Flush any pending save when tab is switched (unmount)
   useEffect(() => {

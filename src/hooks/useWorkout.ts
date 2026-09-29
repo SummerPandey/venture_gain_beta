@@ -193,7 +193,7 @@ export function useWorkout() {
   useEffect(() => {
     if (!user) { setLoaded(true); return }
     loadAll(user.id)
-  }, [user])
+  }, [user?.id])
 
   const flushPendingWorkout = () => {
     if (pendingWorkout.current && userRef.current) {
@@ -244,7 +244,7 @@ export function useWorkout() {
         if (time) setScheduledTimeState(time)
         if (categories.length > 0) setScheduledCategoriesState(categories)
       })
-  }, [user])
+  }, [user?.id])
 
   const savePlan = () => {
     if (!userRef.current) return
@@ -315,7 +315,7 @@ export function useWorkout() {
   useEffect(() => {
     if (!loaded || !user) return
     refreshSteps()
-  }, [loaded, user])
+  }, [loaded, user?.id])
 
   /** Pulls today's minutes in Fitbit's cardio heart-rate zone — a real-data companion
    *  to the self-reported cardio stepper above, not a replacement for it. */
@@ -334,7 +334,7 @@ export function useWorkout() {
   useEffect(() => {
     if (!loaded || !user) return
     refreshFitbitCardio()
-  }, [loaded, user])
+  }, [loaded, user?.id])
 
   // Mirror the in-progress (not-yet-logged) exercise to localStorage so it survives
   // the PWA getting backgrounded and reclaimed mid-session — see readWorkoutDraft().
@@ -367,7 +367,7 @@ export function useWorkout() {
       }
     }, 2000)
     return () => clearTimeout(id)
-  }, [workoutLevel, energyLevel, cardioMinutes, todayWorkouts, loaded, user, isDirty])
+  }, [workoutLevel, energyLevel, cardioMinutes, todayWorkouts, loaded, user?.id, isDirty])
 
   // Last-resort flush on a genuine unmount (e.g. sign-out) — the visibilitychange/
   // pagehide handlers above cover the normal backgrounding case, since this

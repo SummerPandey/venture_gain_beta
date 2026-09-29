@@ -548,8 +548,8 @@ If not a logging request: {"action":"chat"}`
                 <div key={week.weekNumber}>
                   <div
                     onClick={() => setExpandedWeek(isExpanded ? null : week.weekNumber)}
-                    className="monument-card p-4 cursor-pointer hover:opacity-80 transition-all mb-2"
-                    style={{ background: weekHasData ? 'rgba(255, 159, 102, 0.15)' : 'rgba(255, 252, 248, 0.5)', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.15)' }}
+                    className="monument-card p-4 cursor-pointer hover:opacity-80 transition-all mb-2 relative"
+                    style={{ background: weekHasData ? 'rgba(255, 159, 102, 0.15)' : 'rgba(255, 252, 248, 0.5)', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.15)', zIndex: 41 }}
                   >
                     <div className="flex justify-between items-center">
                       <div className="monument-text" style={{ color: '#6B4423', fontSize: '14px', fontWeight: '700' }}>Week {week.weekNumber}</div>
@@ -791,10 +791,13 @@ If not a logging request: {"action":"chat"}`
       {/* Chat FAB */}
       <button
         onClick={() => setShowChat(true)}
-        className="fixed bottom-24 right-6 p-4 soft-pulse monument-button"
-        style={{ background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '50%', border: '3px solid #8B5A3E', boxShadow: '0 0 20px rgba(255, 184, 138, 0.4), 0 6px 0 rgba(139, 90, 62, 0.3)', zIndex: 40 }}
+        className="fixed right-6 p-3 soft-pulse monument-button"
+        style={{
+          bottom: 'calc(6rem + env(safe-area-inset-bottom))',
+          background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '50%', border: '3px solid #8B5A3E', boxShadow: '0 0 20px rgba(255, 184, 138, 0.4), 0 6px 0 rgba(139, 90, 62, 0.3)', zIndex: 40,
+        }}
       >
-        <MessageCircle size={28} strokeWidth={2.5} color="#6B4423" />
+        <MessageCircle size={24} strokeWidth={2.5} color="#6B4423" />
       </button>
 
       {/* Chat Modal */}

@@ -126,7 +126,7 @@ export function useNutrition() {
   useEffect(() => {
     if (!user) { setLoaded(true); return }
     loadAll(user.id).then(() => setLoaded(true))
-  }, [user])
+  }, [user?.id])
 
   const flushPendingNutrition = () => {
     if (pendingNutrition.current && userRef.current) {
@@ -180,7 +180,7 @@ export function useNutrition() {
       pendingNutrition.current = null
     }, 600)
     return () => clearTimeout(id)
-  }, [state.waterLiters, state.calories, state.proteinGrams, state.sugarGrams, todayMultivitamins, loaded, user])
+  }, [state.waterLiters, state.calories, state.proteinGrams, state.sugarGrams, todayMultivitamins, loaded, user?.id])
 
   // Last-resort flush on a genuine unmount (e.g. sign-out) — the visibilitychange/
   // pagehide handlers above cover the normal backgrounding case, since this
@@ -211,7 +211,7 @@ export function useNutrition() {
   useEffect(() => {
     if (!loaded || !user) return
     refreshFitbitCalories()
-  }, [loaded, user])
+  }, [loaded, user?.id])
 
   useEffect(() => {
     if (!celebration) return

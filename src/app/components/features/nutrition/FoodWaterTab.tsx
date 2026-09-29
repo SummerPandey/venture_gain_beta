@@ -51,12 +51,13 @@ function StepperInput({ value, onDecrement, onIncrement, onChange, min = 0, max,
       <div className="flex gap-2 items-center">
         <button
           onClick={onDecrement}
-          className="monument-button p-2"
+          className="monument-button p-2 relative"
           style={{
             background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)',
             borderRadius: '10px',
             border: '2px solid #8B5A3E',
             boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)',
+            zIndex: 41,
           }}
         >
           <Minus size={18} strokeWidth={2.5} color="#6B4423" />
@@ -84,12 +85,13 @@ function StepperInput({ value, onDecrement, onIncrement, onChange, min = 0, max,
         />
         <button
           onClick={onIncrement}
-          className="monument-button p-2"
+          className="monument-button p-2 relative"
           style={{
             background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)',
             borderRadius: '10px',
             border: '2px solid #8B5A3E',
             boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)',
+            zIndex: 41,
           }}
         >
           <Plus size={18} strokeWidth={2.5} color="#6B4423" />
@@ -830,8 +832,9 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
       {/* Floating Arrow FAB */}
       <button
         onClick={() => setShowMediaMenu(v => !v)}
-        className="fixed bottom-24 right-6 p-4 soft-pulse monument-button"
+        className="fixed right-6 p-3 soft-pulse monument-button"
         style={{
+          bottom: 'calc(6rem + env(safe-area-inset-bottom))',
           background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)',
           borderRadius: '50%',
           border: '3px solid #8B5A3E',
@@ -841,7 +844,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
           transition: 'transform 0.2s ease',
         }}
       >
-        <ChevronUp size={28} strokeWidth={2.5} color="#6B4423" />
+        <ChevronUp size={24} strokeWidth={2.5} color="#6B4423" />
       </button>
     </div>
   )

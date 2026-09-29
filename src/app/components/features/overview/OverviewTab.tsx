@@ -455,7 +455,7 @@ export function OverviewTab() {
       <div className="monument-card p-5 mb-6">
         <div className="monument-text text-center mb-4" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>Stats</div>
         <ResponsiveContainer width="100%" height={260}>
-          <RadarChart data={radarStats}>
+          <RadarChart data={radarStats} outerRadius="65%" margin={{ top: 10, right: 28, bottom: 10, left: 28 }}>
             <PolarGrid stroke="rgba(160, 114, 90, 0.2)" strokeWidth={1} />
             <PolarAngleAxis
               dataKey="stat"
