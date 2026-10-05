@@ -4,8 +4,10 @@ const GROQ_URL = '/api/groq'
 // llama-3.3-70b-versatile was removed from Groq's catalog; gpt-oss-120b is the closest replacement.
 const GROQ_MODEL = 'openai/gpt-oss-120b'
 
+import { apiHeaders } from './apiAuth'
+
 function headers() {
-  return { 'Content-Type': 'application/json' }
+  return apiHeaders({ 'Content-Type': 'application/json' })
 }
 
 /**
@@ -80,7 +82,7 @@ export async function groqText(prompt: string, systemPrompt?: string): Promise<s
   ]
   const res = await fetch(GROQ_URL, {
     method: 'POST',
-    headers: headers(),
+    headers: await headers(),
     body: JSON.stringify({ model: GROQ_MODEL, messages, temperature: 0.1 }),
   })
   const data = await res.json()
@@ -97,7 +99,7 @@ export async function groqChat(
 ): Promise<string> {
   const res = await fetch(GROQ_URL, {
     method: 'POST',
-    headers: headers(),
+    headers: await headers(),
     body: JSON.stringify({
       model: GROQ_MODEL,
       messages: [{ role: 'system', content: systemPrompt }, ...history],

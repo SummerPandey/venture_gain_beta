@@ -3,10 +3,16 @@
 // "Calories Burned"). Same dailyRollUp shape as steps; same scope
 // (activity_and_fitness.readonly) already covers this data type.
 
+import { requireUser } from './_auth.js'
+
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const CALORIES_URL = 'https://health.googleapis.com/v4/users/me/dataTypes/total-calories/dataPoints:dailyRollUp'
 
-interface Req { method?: string; query?: Record<string, string | string[] | undefined> }
+interface Req {
+  method?: string
+  query?: Record<string, string | string[] | undefined>
+  headers?: Record<string, string | string[] | undefined>
+}
 interface Res {
   status(code: number): Res
   json(body: unknown): void
@@ -42,6 +48,7 @@ export default async function handler(req: Req, res: Res) {
     res.status(405).json({ error: 'Method not allowed' })
     return
   }
+  if (!(await requireUser(req, res))) return
 
   const clientId = process.env.GOOGLE_HEALTH_CLIENT_ID
   const clientSecret = process.env.GOOGLE_HEALTH_CLIENT_SECRET

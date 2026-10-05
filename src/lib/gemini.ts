@@ -3,6 +3,8 @@
 //
 // Used for vision tasks (food/workout photo scanning) since Groq deprecated
 // its vision models on the free/developer tier.
+import { apiHeaders } from './apiAuth'
+
 const GEMINI_URL = '/api/gemini'
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -10,7 +12,7 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 async function callGemini(base64: string, mimeType: string, prompt: string) {
   const res = await fetch(GEMINI_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await apiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       // Flash-lite tier — the pro tier has zero free-tier quota on this project (429s
       // on every request), and gemini-flash-latest is currently overloaded (constant

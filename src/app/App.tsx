@@ -221,7 +221,8 @@ function SettingsModal({ onClose, onboarding = false }: { onClose: () => void; o
           <SectionLabel>CONNECTIONS</SectionLabel>
           <div className="mb-4">
             <a
-              href={getGoogleHealthAuthUrl()}
+              href="#"
+              onClick={e => { e.preventDefault(); window.location.href = getGoogleHealthAuthUrl() }}
               className="monument-button w-full flex items-center justify-center py-3"
               style={{
                 borderRadius: '14px',
