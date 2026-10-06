@@ -23,7 +23,7 @@ coverage/
 # Logs
 *.log
 
-# Claude / editor
+# Local tool and editor config
 .claude/
 CLAUDE.md
 .vscode/
