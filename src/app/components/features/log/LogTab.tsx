@@ -1011,7 +1011,7 @@ If not a logging request: {"action":"chat"}`
         className="fixed right-6 p-3 soft-pulse monument-button"
         style={{
           bottom: 'calc(6rem + env(safe-area-inset-bottom))',
-          background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '50%', border: '3px solid #8B5A3E', boxShadow: '0 0 20px rgba(255, 184, 138, 0.4), 0 6px 0 rgba(139, 90, 62, 0.3)', zIndex: 40,
+          background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '50%', border: '3px solid #8B5A3E', boxShadow: '0 0 20px rgba(255, 184, 138, 0.4), 0 6px 0 rgba(139, 90, 62, 0.3)', zIndex: 45,
         }}
       >
         <MessageCircle size={24} strokeWidth={2.5} color="#6B4423" />
@@ -1020,7 +1020,7 @@ If not a logging request: {"action":"chat"}`
       {/* Chat Modal */}
       {showChat && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setShowChat(false)} />
+          <div className="fixed inset-0 z-[44]" onClick={() => setShowChat(false)} />
           <div
             role="dialog"
             aria-modal="true"

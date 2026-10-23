@@ -536,7 +536,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
   const sugarExceeded = state.sugarGrams > limits.sugarLimit
 
   return (
-    <div className="p-6 max-w-md mx-auto">
+    <div className="p-6 max-w-md mx-auto" style={{ paddingBottom: 'calc(9rem + env(safe-area-inset-bottom))' }}>
       <h2
         className="monument-text mb-6 text-center"
         style={{ color: '#6B4423', fontSize: '20px', fontWeight: '700', textShadow: '0 2px 8px rgba(255, 184, 138, 0.3)' }}
@@ -963,7 +963,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
       {/* Drop-up media menu */}
       {showMediaMenu && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => { if (!companionMode) setShowMediaMenu(false) }} />
+          <div className="fixed inset-0 z-[44]" onClick={() => { if (!companionMode) setShowMediaMenu(false) }} />
           {/* Sits 80px above the FAB (bottom: 6rem + safe area), so it tracks it on notched phones. */}
           <div id="food-add-menu" className="fixed z-50 flex flex-col gap-2 items-end" style={{ bottom: 'calc(6rem + 80px + env(safe-area-inset-bottom))', right: '16px' }}>
             {companionMode ? (
@@ -1052,7 +1052,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
           borderRadius: '50%',
           border: '3px solid #8B5A3E',
           boxShadow: '0 0 20px rgba(255, 184, 138, 0.4), 0 6px 0 rgba(139, 90, 62, 0.3)',
-          zIndex: 40,
+          zIndex: 45,
           transform: showMediaMenu ? 'rotate(180deg)' : 'rotate(0deg)',
           transition: 'transform 0.2s ease',
         }}

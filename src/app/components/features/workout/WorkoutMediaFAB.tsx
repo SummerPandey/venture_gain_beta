@@ -572,7 +572,7 @@ For all other messages just reply as plain text.`
       {/* Drop-up media menu */}
       {showMediaMenu && (
         <>
-          <div className="fixed inset-0 z-40"
+          <div className="fixed inset-0 z-[44]"
             onClick={() => { if (!micReady && !micRecording && !textMode && !coachMode) setShowMediaMenu(false) }} />
           <div className="fixed z-50 flex flex-col gap-2 items-end" style={{ bottom: 'calc(176px + env(safe-area-inset-bottom))', right: '16px' }}>
             {coachMode ? (
@@ -736,7 +736,7 @@ For all other messages just reply as plain text.`
           borderRadius: '50%',
           border: '3px solid #8B5A3E',
           boxShadow: '0 0 20px rgba(255,184,138,0.4),0 6px 0 rgba(139,90,62,0.3)',
-          zIndex: 40,
+          zIndex: 45,
           transform: showMediaMenu ? 'rotate(180deg)' : 'rotate(0deg)',
           transition: 'transform 0.2s ease',
         }}
