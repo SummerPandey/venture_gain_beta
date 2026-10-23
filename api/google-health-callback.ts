@@ -1,13 +1,13 @@
 // Vercel serverless function: OAuth callback for the Google Health API.
 //
 // Exchanges the authorization code Google redirects back with for a refresh token, then
-// displays it once so it can be copied into GOOGLE_HEALTH_REFRESH_TOKEN. There's no
-// per-user database table for this — it's a single-user app — so unlike GROQ_API_KEY /
-// GEMINI_API_KEY (set once, forever), this one has to be re-copied in periodically:
-// Google expires refresh tokens after ~7 days for OAuth apps still in "Testing" mode in
-// Google Cloud Console, so re-running the "Connect" flow is a recurring maintenance step,
-// not a one-time setup.
+// hands it to the app: an inline script puts it in sessionStorage (same origin, same tab)
+// and returns to "/", where the signed-in app saves it via /api/google-health-token. The
+// token is also shown on the page as a fallback for pasting into Settings → Connections.
+// Google expires refresh tokens after ~7 days for OAuth apps still in "Testing" mode, so
+// reconnecting is still periodic — it just no longer needs a Vercel edit or redeploy.
 
+import { randomBytes } from 'node:crypto'
 import { fetchWithTimeout, readJson } from './_http.js'
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
@@ -45,8 +45,8 @@ function readCookie(header: string | undefined, name: string): string | undefine
 
 // A full document (charset + viewport) so phones lay it out at device width and the em
 // dashes/apostrophes don't garble. Relative link back: works without trusting Host.
-function page(body: string): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>VentureGain: Google Health</title></head>` +
+function page(body: string, head = ''): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>VentureGain: Google Health</title>${head}</head>` +
     `<body style="font-family: -apple-system, sans-serif; max-width: 560px; margin: 48px auto; padding: 0 16px; color: #6B4423; background: #F5E6D3; line-height: 1.5;">${body}` +
     `<p style="margin-top: 32px;"><a href="/" style="color: #8B5A3E; font-weight: 600;">Back to VentureGain</a></p></body></html>`
 }
@@ -121,12 +121,30 @@ export default async function handler(req: Req, res: Res) {
 
     const expiresDays = data.refresh_token_expires_in ? Math.round(data.refresh_token_expires_in / 86400) : null
 
+    // Hand-off script: only this nonce may run (CSP below). JSON.stringify plus escaping
+    // "<" keeps the token from closing the <script> tag, whatever Google sends.
+    const nonce = randomBytes(16).toString('base64')
+    const tokenJs = JSON.stringify(String(data.refresh_token)).replace(/</g, '\\u003c')
+    res.setHeader('Content-Security-Policy', `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'`)
     res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8').end(page(`
       <h2>Connected</h2>
-      <p>Copy this into <code>GOOGLE_HEALTH_REFRESH_TOKEN</code> — in <code>.env.local</code> for local dev, and in Vercel's project env vars for production (then redeploy):</p>
-      <pre style="background:#fff; padding:12px; border-radius:8px; word-break:break-all; white-space:pre-wrap; user-select:all; -webkit-user-select:all;">${escapeHtml(String(data.refresh_token))}</pre>
-      <p style="color:#8B5A3E; font-size:14px;">This token is shown once and isn't stored anywhere by this app — copy it now. While this Google Cloud OAuth app is in "Testing" mode it expires${expiresDays ? ` in ~${expiresDays} day(s)` : ' after about 7 days'} — re-run the Connect flow when steps stop updating.</p>
-    `))
+      <p id="status">Saving to VentureGain and taking you back…</p>
+      <details style="margin-top:20px;">
+        <summary style="cursor:pointer; color:#8B5A3E;">Not redirected? Copy the token manually</summary>
+        <p style="font-size:14px;">Paste it into <b>Settings → Connections → Paste a token</b> in the app:</p>
+        <pre style="background:#fff; padding:12px; border-radius:8px; word-break:break-all; white-space:pre-wrap; user-select:all; -webkit-user-select:all;">${escapeHtml(String(data.refresh_token))}</pre>
+      </details>
+      <p style="color:#8B5A3E; font-size:14px;">While this Google Cloud OAuth app is in "Testing" mode the connection expires${expiresDays ? ` in ~${expiresDays} day(s)` : ' after about 7 days'} — reconnect from Settings when steps stop updating.</p>
+    `, `<script nonce="${nonce}">
+      try {
+        sessionStorage.setItem('vg:pendingGoogleToken', ${tokenJs});
+        location.replace('/');
+      } catch (e) {
+        document.addEventListener('DOMContentLoaded', function () {
+          document.getElementById('status').textContent = 'Could not hand the token to the app automatically — copy it below.';
+        });
+      }
+    </script>`))
   } catch {
     res.status(502).setHeader('Content-Type', 'text/html; charset=utf-8').end(page('<h2>Request to Google failed</h2>'))
   }

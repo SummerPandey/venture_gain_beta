@@ -51,6 +51,60 @@ export async function getAccessToken(clientId: string, clientSecret: string, ref
   return pending
 }
 
+// ── Where the refresh token lives ──
+// Saved per user in Supabase (google_health_tokens, RLS: own row only) from the Connect
+// flow or the Settings paste box, so reconnecting needs no Vercel edit or redeploy.
+// GOOGLE_HEALTH_REFRESH_TOKEN stays as a fallback for accounts that haven't saved one.
+// Both calls run under the caller's own JWT, so RLS — not this code — scopes the row.
+
+function supabaseRest(): { url: string; anonKey: string } | null {
+  const url = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL
+  const anonKey = process.env.SUPABASE_ANON_KEY ?? process.env.VITE_SUPABASE_ANON_KEY
+  return url && anonKey ? { url: `${url}/rest/v1`, anonKey } : null
+}
+
+/** The caller's saved refresh token, else the env fallback. A missing table or a Supabase
+ *  hiccup falls back too, so health sync never breaks on the lookup itself. */
+export async function resolveRefreshToken(userJwt: string): Promise<string | undefined> {
+  const fallback = process.env.GOOGLE_HEALTH_REFRESH_TOKEN || undefined
+  const rest = supabaseRest()
+  if (!rest) return fallback
+  try {
+    const r = await fetchWithTimeout(`${rest.url}/google_health_tokens?select=refresh_token&limit=1`, {
+      headers: { apikey: rest.anonKey, Authorization: `Bearer ${userJwt}` },
+    }, 5000)
+    if (!r.ok) return fallback
+    const { data } = await readJson(r)
+    const saved = Array.isArray(data) ? data[0]?.refresh_token : undefined
+    return typeof saved === 'string' && saved ? saved : fallback
+  } catch {
+    return fallback
+  }
+}
+
+/** Upserts the caller's refresh token. Throws with a user-safe message on failure. */
+export async function saveRefreshToken(userId: string, userJwt: string, refreshToken: string): Promise<void> {
+  const rest = supabaseRest()
+  if (!rest) throw new Error('Server misconfigured')
+  const r = await fetchWithTimeout(`${rest.url}/google_health_tokens?on_conflict=user_id`, {
+    method: 'POST',
+    headers: {
+      apikey: rest.anonKey,
+      Authorization: `Bearer ${userJwt}`,
+      'Content-Type': 'application/json',
+      Prefer: 'resolution=merge-duplicates,return=minimal',
+    },
+    body: JSON.stringify({ user_id: userId, refresh_token: refreshToken, updated_at: new Date().toISOString() }),
+  }, 8000)
+  if (!r.ok) {
+    const { data } = await readJson(r)
+    console.error('saveRefreshToken:', r.status, data?.code, data?.message)
+    // PGRST205 / 42P01: the table hasn't been created yet (see supabase/migrations).
+    const missing = r.status === 404 || data?.code === 'PGRST205' || data?.code === '42P01'
+    throw new Error(missing ? 'Token storage is not set up yet (run the google_health_tokens migration in Supabase)' : 'Could not save the token')
+  }
+}
+
 export interface CivilDate { year: number; month: number; day: number }
 
 /** Parses a real calendar YYYY-MM-DD (rejecting 2026-02-30, 2026-13-01, …) and returns it with

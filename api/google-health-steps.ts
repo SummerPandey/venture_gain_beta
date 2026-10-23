@@ -5,8 +5,8 @@
 // total. Returns 428 when no refresh token is configured yet, so the client can show a
 // "Connect" prompt instead of a generic error.
 
-import { requireUser } from './_auth.js'
-import { getAccessToken, googleFetch, parseDay, sendGoogleError } from './_googleHealth.js'
+import { authenticateUser } from './_auth.js'
+import { getAccessToken, googleFetch, parseDay, resolveRefreshToken, sendGoogleError } from './_googleHealth.js'
 
 const STEPS_URL = 'https://health.googleapis.com/v4/users/me/dataTypes/steps/dataPoints:dailyRollUp'
 
@@ -25,11 +25,12 @@ export default async function handler(req: Req, res: Res) {
     res.status(405).json({ error: 'Method not allowed' })
     return
   }
-  if (!(await requireUser(req, res))) return
+  const user = await authenticateUser(req, res)
+  if (!user) return
 
   const clientId = process.env.GOOGLE_HEALTH_CLIENT_ID
   const clientSecret = process.env.GOOGLE_HEALTH_CLIENT_SECRET
-  const refreshToken = process.env.GOOGLE_HEALTH_REFRESH_TOKEN
+  const refreshToken = await resolveRefreshToken(user.token)
   if (!clientId || !clientSecret || !refreshToken) {
     res.status(428).json({ error: 'Google Health not connected' })
     return

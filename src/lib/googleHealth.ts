@@ -97,3 +97,35 @@ export function fetchCardioMinutes(date: string): Promise<number> {
 export function fetchCaloriesBurned(date: string): Promise<number> {
   return fetchHealthNumber('/api/google-health-calories', date, 'kcal', 'Calories')
 }
+
+/** Where /api/google-health-callback leaves a fresh token for the app to pick up. */
+const PENDING_TOKEN_KEY = 'vg:pendingGoogleToken'
+
+export function readPendingGoogleToken(): string | null {
+  try { return sessionStorage.getItem(PENDING_TOKEN_KEY) } catch { return null }
+}
+
+export function clearPendingGoogleToken(): void {
+  try { sessionStorage.removeItem(PENDING_TOKEN_KEY) } catch { /* storage blocked — nothing to clear */ }
+}
+
+/** Saves a refresh token for the signed-in account via /api/google-health-token, which
+ *  checks it with Google first. Throws an Error whose message is safe to show. */
+export async function saveGoogleHealthToken(refreshToken: string): Promise<void> {
+  let res: Response
+  try {
+    res = await fetch('/api/google-health-token', {
+      method: 'POST',
+      headers: await apiHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ refreshToken }),
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+    })
+  } catch {
+    throw new Error("Couldn't reach the server — check your connection and try again.")
+  }
+  if (res.status === 401) throw new SessionExpiredError('Session expired — please sign in again')
+  if (!res.ok) {
+    const data = (await res.json().catch(() => null)) as { error?: unknown } | null
+    throw new Error(typeof data?.error === 'string' ? data.error : `Couldn't save the token (${res.status})`)
+  }
+}

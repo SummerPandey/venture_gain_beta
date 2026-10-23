@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
+import { enterDemo } from '@/lib/demo/demoMode'
 
 export function AuthPage() {
   const { signIn, signUp } = useAuth()
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin')
+  const [mode, setMode] = useState<'signin' | 'signup' | 'demo'>('signin')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [inviteCode, setInviteCode] = useState('')
@@ -99,7 +100,7 @@ export function AuthPage() {
       <div className="monument-card p-6 w-full max-w-sm">
         {/* Tab toggle */}
         <div className="flex gap-2 mb-6">
-          {(['signin', 'signup'] as const).map(m => (
+          {(['signin', 'signup', 'demo'] as const).map(m => (
             <button
               key={m}
               type="button"
@@ -111,11 +112,30 @@ export function AuthPage() {
                 : { background: 'rgba(255, 252, 248, 0.95)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '12px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)' }
               }
             >
-              {m === 'signin' ? 'SIGN IN' : 'SIGN UP'}
+              {m === 'signin' ? 'SIGN IN' : m === 'signup' ? 'SIGN UP' : 'DEMO'}
             </button>
           ))}
         </div>
 
+        {mode === 'demo' ? (
+          <div className="space-y-4">
+            <div className="monument-text text-center" style={{ color: '#6B4423', fontSize: '15px', fontWeight: '800' }}>Look around, no account needed</div>
+            <ul className="space-y-2" style={{ color: '#8B5A3E', fontSize: '12px', fontWeight: '600', lineHeight: 1.45, listStyle: 'none', padding: 0, margin: 0 }}>
+              <li>✨ Three weeks of sample workouts, meals and sleep</li>
+              <li>🔥 Your companion reacts to the sample day</li>
+              <li>🤖 AI scan and chat answer with example replies</li>
+              <li>🔒 Nothing is saved to an account — it stays in this browser</li>
+            </ul>
+            <button
+              type="button"
+              onClick={enterDemo}
+              className="monument-button w-full py-3 mt-2"
+              style={{ background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '14px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '12px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)' }}
+            >
+              ENTER DEMO
+            </button>
+          </div>
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label htmlFor="auth-email" className="monument-text block mb-2" style={labelStyle}>EMAIL</label>
@@ -185,6 +205,7 @@ export function AuthPage() {
             {loading ? (mode === 'signin' ? 'SIGNING IN...' : 'CREATING...') : mode === 'signin' ? 'SIGN IN' : 'CREATE ACCOUNT'}
           </button>
         </form>
+        )}
       </div>
     </div>
   )

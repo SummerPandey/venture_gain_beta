@@ -741,7 +741,7 @@ export function useWorkout() {
 
   return {
     workoutLevel, energyLevel, cardioMinutes, weeklyCardioMinutes,
-    steps, stepsStatus, refreshSteps,
+    steps, stepsStatus, refreshSteps, refreshFitbitCardio,
     fitbitCardioMinutes, fitbitCardioStatus,
     cardioTarget: settings.cardioTarget,
     uploadedImage, selectedExercise, setSelectedExercise,

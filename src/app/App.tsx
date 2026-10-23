@@ -10,7 +10,8 @@ import { AuthPage } from './components/auth/AuthPage'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { HealthDataProvider, useHealthData } from '@/contexts/HealthDataContext'
 import { UserSettingsProvider, useUserSettings, AVATAR_SPRITES, type UserSettings } from '@/contexts/UserSettingsContext'
-import { getGoogleHealthAuthUrl } from '@/lib/googleHealth'
+import { IS_DEMO, exitDemo } from '@/lib/demo/demoMode'
+import { getGoogleHealthAuthUrl, saveGoogleHealthToken, readPendingGoogleToken, clearPendingGoogleToken } from '@/lib/googleHealth'
 
 interface TabConfig {
   name: string
@@ -132,7 +133,95 @@ function SettingsRow({ label, unit, value, min, max, onDecrement, onIncrement, o
   )
 }
 
-function SettingsModal({ onClose, onboarding = false }: { onClose: () => void; onboarding?: boolean }) {
+/** Re-pulls every Fitbit-backed number after a new token is saved. */
+function useFitbitResync() {
+  const { workout, nutrition, sleep } = useHealthData()
+  return () => {
+    workout.refreshSteps()
+    workout.refreshFitbitCardio()
+    nutrition.refreshFitbitCalories()
+    sleep.refreshFitbitSleep()
+  }
+}
+
+function FitbitTokenPanel({ initialError }: { initialError?: string | null }) {
+  const resync = useFitbitResync()
+  const [token, setToken] = useState(() => readPendingGoogleToken() ?? '')
+  const [state, setState] = useState<'idle' | 'saving' | 'saved' | 'error'>(initialError ? 'error' : 'idle')
+  const [error, setError] = useState<string | null>(initialError ?? null)
+  const [open, setOpen] = useState(!!initialError)
+
+  const save = async () => {
+    if (state === 'saving' || !token.trim()) return
+    setState('saving')
+    setError(null)
+    try {
+      await saveGoogleHealthToken(token.trim())
+      clearPendingGoogleToken()
+      setToken('')
+      setState('saved')
+      resync()
+    } catch (e) {
+      setState('error')
+      setError(e instanceof Error ? e.message : "Couldn't save the token")
+    }
+  }
+
+  return (
+    <div className="mt-3" style={{ background: 'rgba(255,252,248,0.9)', borderRadius: '14px', border: '1.5px solid rgba(139,90,62,0.15)' }}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        aria-controls="fitbit-token-panel"
+        className="w-full flex items-center justify-between px-3.5"
+        style={{ minHeight: 44, background: 'transparent', border: 'none', cursor: 'pointer' }}
+      >
+        <span className="monument-text" style={{ color: '#6B4423', fontSize: '11px', fontWeight: '700', letterSpacing: '0.3px' }}>Paste a token</span>
+        <ChevronLeft size={14} color="#8B5A3E" style={{ transform: open ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform 0.2s' }} />
+      </button>
+      {open && (
+        <div id="fitbit-token-panel" className="px-3.5 pb-3.5">
+          <label htmlFor="fitbit-token-input" className="monument-text block mb-1.5" style={{ color: '#A0725A', fontSize: '10px', lineHeight: 1.4 }}>
+            Only needed if Connect didn't bring you back here. Paste the token from the "Connected" page (starts with 1//).
+          </label>
+          <textarea
+            id="fitbit-token-input"
+            value={token}
+            onChange={e => { setToken(e.target.value); if (state !== 'saving') setState('idle') }}
+            rows={3}
+            autoComplete="off"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            placeholder="1//0…"
+            className="w-full outline-none"
+            style={{
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '16px', lineHeight: 1.35,
+              color: '#6B4423', background: '#fff', borderRadius: '10px', padding: '8px 10px', resize: 'none',
+              border: `1.5px solid ${state === 'error' ? 'rgba(211,47,47,0.45)' : 'rgba(139,90,62,0.25)'}`, wordBreak: 'break-all',
+            }}
+          />
+          <button
+            type="button"
+            onClick={save}
+            disabled={state === 'saving' || !token.trim()}
+            aria-busy={state === 'saving'}
+            className="monument-button w-full mt-2 flex items-center justify-center"
+            style={{ ...BTN, minHeight: 40, color: '#6B4423', fontSize: '11px', fontWeight: '700', letterSpacing: '0.5px', opacity: state === 'saving' || !token.trim() ? 0.6 : 1 }}
+          >
+            {state === 'saving' ? 'CHECKING WITH GOOGLE…' : 'SAVE TOKEN'}
+          </button>
+          <div role="status" aria-live="polite" className="monument-text mt-1.5 text-center" style={{ fontSize: '10px', fontWeight: '700', color: state === 'error' ? '#B3261E' : '#5A8A5C', minHeight: 14 }}>
+            {state === 'saved' ? '✓ Saved — syncing Fitbit now' : state === 'error' ? error : ''}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SettingsModal({ onClose, onboarding = false, tokenError = null }: { onClose: () => void; onboarding?: boolean; tokenError?: string | null }) {
   const { settings: saved, saveSettings } = useUserSettings()
   const [draft, setDraft] = useState<UserSettings>(saved)
   const [syncing, setSyncing] = useState(false)
@@ -176,7 +265,7 @@ function SettingsModal({ onClose, onboarding = false }: { onClose: () => void; o
 
   // Fitbit OAuth leaves the page, so save any edits first
   const connectFitbit = async () => {
-    if (syncing) return
+    if (syncing || IS_DEMO) return
     if (isDirty && !(await persist())) return
     window.location.href = getGoogleHealthAuthUrl()
   }
@@ -324,6 +413,7 @@ function SettingsModal({ onClose, onboarding = false }: { onClose: () => void; o
             <div className="monument-text mt-1.5 text-center" style={{ color: '#A0725A', fontSize: '8px', opacity: 0.7 }}>
               One connection powers steps, cardio, sleep & calories burnt everywhere in the app
             </div>
+            <FitbitTokenPanel initialError={tokenError} />
           </div>
         </div>
 
@@ -356,6 +446,37 @@ function AppShell() {
   const [showSettings, setShowSettings] = useState(false)
   const [workoutModeActive, setWorkoutModeActive] = useState(false)
   const [workoutModeTab, setWorkoutModeTab] = useState<'today' | 'previous'>('today')
+  const resyncFitbit = useFitbitResync()
+  const [fitbitToast, setFitbitToast] = useState<string | null>(null)
+  const [tokenError, setTokenError] = useState<string | null>(null)
+
+  // Back from Connect: the callback page left the new token in sessionStorage. Save it to
+  // this account; if that fails, open Settings with the token prefilled and the reason shown.
+  useEffect(() => {
+    if (!user) return
+    const pending = readPendingGoogleToken()
+    if (!pending) return
+    let cancelled = false
+    saveGoogleHealthToken(pending)
+      .then(() => {
+        clearPendingGoogleToken()
+        if (cancelled) return
+        resyncFitbit()
+        setFitbitToast('✓ Fitbit connected')
+      })
+      .catch(e => {
+        if (cancelled) return
+        setTokenError(e instanceof Error ? e.message : "Couldn't save the Fitbit token")
+        setShowSettings(true)
+      })
+    return () => { cancelled = true }
+  }, [user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!fitbitToast) return
+    const t = setTimeout(() => setFitbitToast(null), 2500)
+    return () => clearTimeout(t)
+  }, [fitbitToast])
 
   // Give workout mode its own history entry so Android back / iOS swipe-back
   // exits the mode instead of leaving the app.
@@ -445,7 +566,7 @@ function AppShell() {
             <Settings size={16} color="#8B5A3E" strokeWidth={2} />
           </button>
           <button
-            onClick={() => { if (window.confirm('Sign out of VentureGain?')) void signOut() }}
+            onClick={() => { if (window.confirm(IS_DEMO ? 'Exit the demo?' : 'Sign out of VentureGain?')) void signOut() }}
             className="monument-button"
             aria-label="Sign out"
             style={{ ...iconBtnStyle, right: '14px' }}
@@ -453,6 +574,23 @@ function AppShell() {
             <LogOut size={16} color="#8B5A3E" strokeWidth={2} />
           </button>
         </>
+      )}
+
+      {IS_DEMO && (
+        <div
+          className="flex-shrink-0 flex items-center justify-center gap-2 relative"
+          style={{ zIndex: 43, paddingTop: 'calc(env(safe-area-inset-top) + 4px)', paddingBottom: 4, background: 'linear-gradient(90deg,#FFE3CC,#FFF1DE,#FFE3CC)', borderBottom: '1.5px dashed rgba(139,90,62,0.35)' }}
+        >
+          <span className="monument-text" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '0.6px' }}>✨ DEMO · SAMPLE DATA, NOTHING IS SAVED</span>
+          <button
+            type="button"
+            onClick={exitDemo}
+            className="monument-text"
+            style={{ minHeight: 28, padding: '0 10px', borderRadius: 8, border: '1.5px solid #8B5A3E', background: 'rgba(255,252,248,0.9)', color: '#6B4423', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px', cursor: 'pointer' }}
+          >
+            EXIT
+          </button>
+        </div>
       )}
 
       {/* Tab content — no z-index here: it would trap the tabs' fixed modals
@@ -573,7 +711,19 @@ function AppShell() {
         )}
       </nav>
 
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsModal tokenError={tokenError} onClose={() => { setShowSettings(false); setTokenError(null) }} />}
+      {fitbitToast && (
+        // The banner animation owns `transform`, so centre with a wrapper instead
+        <div className="fixed inset-x-0 z-[110] flex justify-center pointer-events-none" style={{ top: 'calc(env(safe-area-inset-top) + 16px)' }}>
+          <div
+            role="status"
+            className="celebration-banner monument-text px-4 py-2"
+            style={{ background: 'rgba(139,175,140,0.95)', color: '#fff', borderRadius: '12px', border: '2px solid #5A8A5C', fontSize: '12px', fontWeight: '700', boxShadow: '0 4px 14px rgba(90,138,92,0.35)' }}
+          >
+            {fitbitToast}
+          </div>
+        </div>
+      )}
       {!showSettings && settingsLoaded && isNewUser && <SettingsModal onClose={() => {}} onboarding />}
     </div>
   )

@@ -18,13 +18,24 @@ interface AuthRes {
   json(body: unknown): void
 }
 
+export interface AuthedUser {
+  id: string
+  /** The caller's Supabase JWT, for PostgREST calls that should run under their RLS. */
+  token: string
+}
+
 export async function requireUser(req: AuthReq, res: AuthRes): Promise<boolean> {
+  return (await authenticateUser(req, res)) !== null
+}
+
+/** Same checks as requireUser, but returns who the caller is (or null after sending the error). */
+export async function authenticateUser(req: AuthReq, res: AuthRes): Promise<AuthedUser | null> {
   const supabaseUrl = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL
   const anonKey = process.env.SUPABASE_ANON_KEY ?? process.env.VITE_SUPABASE_ANON_KEY
   if (!supabaseUrl || !anonKey) {
     console.error('requireUser: SUPABASE_URL / SUPABASE_ANON_KEY missing')
     res.status(500).json({ error: 'Server misconfigured' })
-    return false
+    return null
   }
 
   const header = req.headers?.authorization
@@ -32,7 +43,7 @@ export async function requireUser(req: AuthReq, res: AuthRes): Promise<boolean> 
   const token = auth?.startsWith('Bearer ') ? auth.slice(7) : ''
   if (!token) {
     res.status(401).json({ error: 'Not signed in' })
-    return false
+    return null
   }
 
   const list = (name: string) => (process.env[name] ?? '')
@@ -43,7 +54,7 @@ export async function requireUser(req: AuthReq, res: AuthRes): Promise<boolean> 
   if (setButEmpty('ALLOWED_USER_IDS', allowedIds) || setButEmpty('ALLOWED_USER_EMAILS', allowedEmails)) {
     console.error('requireUser: ALLOWED_USER_IDS / ALLOWED_USER_EMAILS is set but empty')
     res.status(500).json({ error: 'Server misconfigured' })
-    return false
+    return null
   }
 
   let id: string | undefined
@@ -54,26 +65,30 @@ export async function requireUser(req: AuthReq, res: AuthRes): Promise<boolean> 
     }, 8000)
     if (userRes.status === 401 || userRes.status === 403) {
       res.status(401).json({ error: 'Invalid or expired session' })
-      return false
+      return null
     }
     if (!userRes.ok) {
       // A Supabase outage or rate limit is not a dead session: let the client retry.
       res.status(503).json({ error: 'Auth service temporarily unavailable' })
-      return false
+      return null
     }
     const user = (await userRes.json()) as { id?: string; email?: string; email_confirmed_at?: string | null }
     id = user.id
     email = user.email_confirmed_at ? user.email?.toLowerCase() : undefined
   } catch {
     res.status(502).json({ error: 'Could not verify session' })
-    return false
+    return null
   }
 
   const restricted = allowedIds.length > 0 || allowedEmails.length > 0
   const permitted = (!!id && allowedIds.includes(id.toLowerCase())) || (!!email && allowedEmails.includes(email))
   if (restricted && !permitted) {
     res.status(403).json({ error: 'This account is not allowed to use this endpoint' })
-    return false
+    return null
   }
-  return true
+  if (!id) {
+    res.status(401).json({ error: 'Invalid or expired session' })
+    return null
+  }
+  return { id, token }
 }

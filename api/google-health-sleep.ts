@@ -9,8 +9,8 @@
 // activity_and_fitness.readonly — reconnect via /api/google-health-callback if the
 // existing GOOGLE_HEALTH_REFRESH_TOKEN predates adding that scope.
 
-import { requireUser } from './_auth.js'
-import { getAccessToken, googleFetch, parseDay, sendGoogleError } from './_googleHealth.js'
+import { authenticateUser } from './_auth.js'
+import { getAccessToken, googleFetch, parseDay, resolveRefreshToken, sendGoogleError } from './_googleHealth.js'
 
 const SLEEP_URL = 'https://health.googleapis.com/v4/users/me/dataTypes/sleep/dataPoints'
 
@@ -54,11 +54,12 @@ export default async function handler(req: Req, res: Res) {
     res.status(405).json({ error: 'Method not allowed' })
     return
   }
-  if (!(await requireUser(req, res))) return
+  const user = await authenticateUser(req, res)
+  if (!user) return
 
   const clientId = process.env.GOOGLE_HEALTH_CLIENT_ID
   const clientSecret = process.env.GOOGLE_HEALTH_CLIENT_SECRET
-  const refreshToken = process.env.GOOGLE_HEALTH_REFRESH_TOKEN
+  const refreshToken = await resolveRefreshToken(user.token)
   if (!clientId || !clientSecret || !refreshToken) {
     res.status(428).json({ error: 'Google Health not connected' })
     return
