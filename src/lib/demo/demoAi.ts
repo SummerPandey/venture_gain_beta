@@ -100,9 +100,12 @@ const LOADED_RE = /(\d+)\s*[x×]\s*(\d+)\s*(?:@\s*)?(\d+(?:\.\d+)?)\s*(kg|lbs?)\
 const BODY_RE = /(\d+)\s*[x×]\s*(\d+)/i
 const CARDIO_RE = /\b(run|running|cardio|bike|biking|row|rowing|walk|swim|jog|hiit|mins?|minutes?)\b/i
 
+// Connective words people type between exercises ("then 3x12 pull-ups"), never a name.
+const FILLER_RE = /\b(then|and|also|plus|did|i|followed by|after that|of)\b/gi
+
 function cleanName(s: string): string {
   return titleCase(
-    s.replace(/^[A-Za-z]:\s*/, '').replace(/[^A-Za-z' -]/g, ' ').replace(/\s+/g, ' ').trim(),
+    s.replace(/^[A-Za-z]:\s*/, '').replace(/[^A-Za-z' -]/g, ' ').replace(FILLER_RE, ' ').replace(/\s+/g, ' ').trim(),
   ).slice(0, 40)
 }
 

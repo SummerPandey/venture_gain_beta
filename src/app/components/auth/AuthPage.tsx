@@ -207,6 +207,32 @@ export function AuthPage() {
         </form>
         )}
       </div>
+
+      {/* 60-second launch film (public/film.html), built from the demo account */}
+      <div className="w-full max-w-sm mt-6">
+        <div className="flex items-center gap-3 mb-2" aria-hidden="true">
+          <div style={{ flex: 1, height: 1.5, background: 'rgba(139, 90, 62, 0.2)' }} />
+          <span className="monument-text" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700', letterSpacing: '1px' }}>SEE IT IN 60 SECONDS</span>
+          <div style={{ flex: 1, height: 1.5, background: 'rgba(139, 90, 62, 0.2)' }} />
+        </div>
+        <div style={{ position: 'relative', width: '100%', aspectRatio: '16 / 9', borderRadius: '14px', overflow: 'hidden', border: '2px solid #8B5A3E', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)', background: '#0E0B09' }}>
+          <iframe
+            src="/film.html"
+            title="VentureGain launch film"
+            loading="lazy"
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0 }}
+          />
+        </div>
+        <a
+          href="/film.html"
+          target="_blank"
+          rel="noopener"
+          className="monument-text block text-center mt-2"
+          style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px' }}
+        >
+          OPEN FULL SCREEN ↗
+        </a>
+      </div>
     </div>
   )
 }
