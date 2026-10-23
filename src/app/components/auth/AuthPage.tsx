@@ -212,7 +212,7 @@ export function AuthPage() {
       <div className="w-full max-w-sm mt-6">
         <div className="flex items-center gap-3 mb-2" aria-hidden="true">
           <div style={{ flex: 1, height: 1.5, background: 'rgba(139, 90, 62, 0.2)' }} />
-          <span className="monument-text" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700', letterSpacing: '1px' }}>SEE IT IN 60 SECONDS</span>
+          <span className="monument-text" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700', letterSpacing: '1px' }}>WATCH THE 80-SECOND TOUR</span>
           <div style={{ flex: 1, height: 1.5, background: 'rgba(139, 90, 62, 0.2)' }} />
         </div>
         <div style={{ position: 'relative', width: '100%', aspectRatio: '16 / 9', borderRadius: '14px', overflow: 'hidden', border: '2px solid #8B5A3E', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)', background: '#0E0B09' }}>
