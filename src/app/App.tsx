@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Dumbbell, Apple, BarChart3, Moon, Calendar, Settings, Plus, Minus, X, LogOut, ChevronLeft } from 'lucide-react'
 import { WorkoutTab } from './components/features/workout'
 import { WorkoutMode } from './components/features/workout/WorkoutMode'
@@ -40,12 +40,20 @@ function SettingsRow({ label, unit, value, min, max, onDecrement, onIncrement, o
   onDecrement: () => void; onIncrement: () => void; onSet: (v: number) => void
 }) {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Raw text while typing — clamping on every keystroke turns "55" into "205"
+  // (first "5" clamps to min 20). Commit + clamp on blur / Enter instead.
+  const [text, setText] = useState<string | null>(null)
 
   const stopRepeat = () => {
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
   }
 
-  const startRepeat = (action: () => void) => {
+  useEffect(() => stopRepeat, [])
+
+  const startRepeat = (e: React.PointerEvent, action: () => void) => {
+    // One chain per row: ignore extra fingers and clear any chain already running
+    if (!e.isPrimary || e.button !== 0) return
+    stopRepeat()
     action()
     let delay = 500
     const tick = () => {
@@ -56,6 +64,18 @@ function SettingsRow({ label, unit, value, min, max, onDecrement, onIncrement, o
     timerRef.current = setTimeout(tick, 600)
   }
 
+  // Pointer presses are handled above; e.detail === 0 means keyboard/AT activation
+  const keyboardStep = (e: React.MouseEvent, action: () => void) => {
+    if (e.detail === 0) action()
+  }
+
+  const commit = () => {
+    if (text === null) return
+    const v = parseFloat(text)
+    if (!isNaN(v)) onSet(Math.min(max, Math.max(min, v)))
+    setText(null)
+  }
+
   return (
     <div className="flex items-center justify-between py-2.5" style={{ borderBottom: '1px solid rgba(139,90,62,0.1)' }}>
       <div>
@@ -64,10 +84,13 @@ function SettingsRow({ label, unit, value, min, max, onDecrement, onIncrement, o
       </div>
       <div className="flex items-center gap-2">
         <button
-          onPointerDown={() => startRepeat(onDecrement)}
+          type="button"
+          aria-label={`Decrease ${label}`}
+          onPointerDown={e => startRepeat(e, onDecrement)}
           onPointerUp={stopRepeat}
           onPointerLeave={stopRepeat}
           onPointerCancel={stopRepeat}
+          onClick={e => keyboardStep(e, onDecrement)}
           className="monument-button flex items-center justify-center"
           style={{ ...BTN, width: 32, height: 32 }}
         >
@@ -75,14 +98,14 @@ function SettingsRow({ label, unit, value, min, max, onDecrement, onIncrement, o
         </button>
         <input
           type="number"
-          inputMode="numeric"
-          value={value}
+          inputMode="decimal"
+          aria-label={`${label} (${unit})`}
+          value={text ?? value}
           min={min}
           max={max}
-          onChange={e => {
-            const v = parseFloat(e.target.value)
-            if (!isNaN(v)) onSet(Math.min(max, Math.max(min, v)))
-          }}
+          onChange={e => setText(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
           onFocus={e => e.target.select()}
           className="monument-text"
           style={{
@@ -92,10 +115,13 @@ function SettingsRow({ label, unit, value, min, max, onDecrement, onIncrement, o
           }}
         />
         <button
-          onPointerDown={() => startRepeat(onIncrement)}
+          type="button"
+          aria-label={`Increase ${label}`}
+          onPointerDown={e => startRepeat(e, onIncrement)}
           onPointerUp={stopRepeat}
           onPointerLeave={stopRepeat}
           onPointerCancel={stopRepeat}
+          onClick={e => keyboardStep(e, onIncrement)}
           className="monument-button flex items-center justify-center"
           style={{ ...BTN, width: 32, height: 32 }}
         >
@@ -116,11 +142,60 @@ function SettingsModal({ onClose, onboarding = false }: { onClose: () => void; o
   const { stepsStatus } = useHealthData().workout
   const fitbitConnected = stepsStatus === 'connected'
 
-  const handleSave = async () => {
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const isDirty = JSON.stringify(draft) !== JSON.stringify(saved)
+  const sheetRef = useRef<HTMLDivElement>(null)
+  const backdropPressRef = useRef(false)
+
+  const persist = async () => {
     setSyncing(true)
-    try { await saveSettings(draft) } catch (e) { console.error(e) } finally { setSyncing(false) }
+    setSaveError(null)
+    try {
+      await saveSettings(draft)
+      return true
+    } catch (e) {
+      console.error('[settings] save failed:', e)
+      setSaveError("Couldn't save — check your connection and try again.")
+      return false
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  const handleSave = async () => {
+    if (syncing) return
+    if (await persist()) onClose()
+  }
+
+  // Dismissing (X, backdrop, Escape) shouldn't silently throw away edits
+  const requestClose = () => {
+    if (onboarding) return
+    if (isDirty && !window.confirm('Discard unsaved changes?')) return
     onClose()
   }
+
+  // Fitbit OAuth leaves the page, so save any edits first
+  const connectFitbit = async () => {
+    if (syncing) return
+    if (isDirty && !(await persist())) return
+    window.location.href = getGoogleHealthAuthUrl()
+  }
+
+  // Dialog focus: move focus into the sheet, handle Escape, restore on close
+  const requestCloseRef = useRef(requestClose)
+  requestCloseRef.current = requestClose
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null
+    sheetRef.current?.focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); requestCloseRef.current() }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      previouslyFocused?.focus?.()
+    }
+  }, [])
 
   const AVATARS = Object.entries(AVATAR_SPRITES).map(([id, sprite]) => ({ id, sprite }))
 
@@ -140,10 +215,21 @@ function SettingsModal({ onClose, onboarding = false }: { onClose: () => void; o
     <div
       className="fixed inset-0 z-[100] flex items-end justify-center"
       style={{ background: 'rgba(107,68,35,0.55)', backdropFilter: 'blur(6px)' }}
-      onClick={onClose}
+      // Only close when the press both started and ended on the backdrop, so a
+      // text-selection drag that ends outside the sheet doesn't dismiss it
+      onPointerDown={e => { backdropPressRef.current = e.target === e.currentTarget }}
+      onClick={e => {
+        if (backdropPressRef.current && e.target === e.currentTarget) requestClose()
+        backdropPressRef.current = false
+      }}
     >
       <div
-        className="w-full max-w-sm flex flex-col"
+        ref={sheetRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        tabIndex={-1}
+        className="w-full max-w-sm flex flex-col outline-none"
         style={{
           background: '#FDF6EE',
           borderRadius: '20px 20px 0 0',
@@ -160,13 +246,13 @@ function SettingsModal({ onClose, onboarding = false }: { onClose: () => void; o
           <div className="mx-auto mb-3" style={{ width: 36, height: 4, borderRadius: 2, background: 'rgba(139,90,62,0.25)' }} />
           {onboarding ? (
             <div className="text-center mb-1">
-              <div className="monument-text" style={{ color: '#6B4423', fontSize: '17px', fontWeight: '800' }}>Welcome!</div>
+              <div id="settings-title" className="monument-text" style={{ color: '#6B4423', fontSize: '17px', fontWeight: '800' }}>Welcome!</div>
               <div className="monument-text mt-1" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700', letterSpacing: '0.3px' }}>Set up your goals & companion to get started</div>
             </div>
           ) : (
             <div className="flex items-center justify-between">
-              <span className="monument-text" style={{ color: '#6B4423', fontSize: '15px', fontWeight: '700', letterSpacing: '0.5px' }}>SETTINGS</span>
-              <button onClick={onClose} className="monument-button flex items-center justify-center" style={{ ...BTN, width: 30, height: 30 }}>
+              <span id="settings-title" className="monument-text" style={{ color: '#6B4423', fontSize: '15px', fontWeight: '700', letterSpacing: '0.5px' }}>SETTINGS</span>
+              <button type="button" onClick={requestClose} aria-label="Close settings" className="monument-button flex items-center justify-center" style={{ ...BTN, width: 30, height: 30 }}>
                 <X size={13} strokeWidth={2.5} color="#6B4423" />
               </button>
             </div>
@@ -222,7 +308,7 @@ function SettingsModal({ onClose, onboarding = false }: { onClose: () => void; o
           <div className="mb-4">
             <a
               href="#"
-              onClick={e => { e.preventDefault(); window.location.href = getGoogleHealthAuthUrl() }}
+              onClick={e => { e.preventDefault(); void connectFitbit() }}
               className="monument-button w-full flex items-center justify-center py-3"
               style={{
                 borderRadius: '14px',
@@ -243,8 +329,15 @@ function SettingsModal({ onClose, onboarding = false }: { onClose: () => void; o
 
         {/* Save */}
         <div className="flex-shrink-0 px-5 pb-5 pt-2">
+          {saveError && (
+            <div role="alert" className="monument-text mb-2 px-3 py-2 text-center" style={{ background: 'rgba(211,47,47,0.08)', border: '1.5px solid rgba(211,47,47,0.3)', borderRadius: '10px', color: '#B3261E', fontSize: '10px', fontWeight: '700' }}>
+              {saveError}
+            </div>
+          )}
           <button
+            type="button"
             onClick={handleSave}
+            aria-busy={syncing}
             className="monument-button w-full py-3.5"
             style={{ ...BTN, color: '#6B4423', fontSize: '13px', fontWeight: '700', letterSpacing: '0.5px' }}
           >
@@ -264,6 +357,16 @@ function AppShell() {
   const [workoutModeActive, setWorkoutModeActive] = useState(false)
   const [workoutModeTab, setWorkoutModeTab] = useState<'today' | 'previous'>('today')
 
+  // Give workout mode its own history entry so Android back / iOS swipe-back
+  // exits the mode instead of leaving the app.
+  useEffect(() => {
+    if (!workoutModeActive) return
+    if (history.state?.mode !== 'workout') history.pushState({ mode: 'workout' }, '')
+    const onPop = () => setWorkoutModeActive(false)
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [workoutModeActive])
+
   if (loading) {
     return (
       <div className="size-full flex items-center justify-center" style={{ background: '#F5E6D3' }}>
@@ -274,10 +377,13 @@ function AppShell() {
 
   if (!user) return <AuthPage />
 
+  const show = (index: number) => !workoutModeActive && activeTab === index
+
   const iconBtnStyle = {
     position: 'absolute' as const,
     top: '12px',
-    zIndex: 20,
+    // Above the tab cards (z 41), below FAB menus and modals (z 50+)
+    zIndex: 42,
     background: 'rgba(255,252,248,0.85)',
     border: '1.5px solid rgba(139,90,62,0.35)',
     borderRadius: '10px',
@@ -339,7 +445,7 @@ function AppShell() {
             <Settings size={16} color="#8B5A3E" strokeWidth={2} />
           </button>
           <button
-            onClick={signOut}
+            onClick={() => { if (window.confirm('Sign out of VentureGain?')) void signOut() }}
             className="monument-button"
             aria-label="Sign out"
             style={{ ...iconBtnStyle, right: '14px' }}
@@ -349,21 +455,19 @@ function AppShell() {
         </>
       )}
 
-      {/* Tab content */}
-      <div className="flex-1 overflow-auto relative" style={{ zIndex: 1 }}>
-        {workoutModeActive ? (
-          <WorkoutMode currentView={workoutModeTab} />
-        ) : (
-          <>
-            <div style={{ display: activeTab === 0 ? 'block' : 'none', height: '100%' }}>
-              <WorkoutTab onEnterWorkoutMode={() => { setWorkoutModeActive(true); setWorkoutModeTab('today') }} />
-            </div>
-            <div style={{ display: activeTab === 1 ? 'block' : 'none', height: '100%' }}><FoodWaterTab /></div>
-            <div style={{ display: activeTab === 2 ? 'block' : 'none', height: '100%' }}><OverviewTab /></div>
-            <div style={{ display: activeTab === 3 ? 'block' : 'none', height: '100%' }}><SleepTab /></div>
-            <div style={{ display: activeTab === 4 ? 'block' : 'none', height: '100%' }}><LogTab isActive={activeTab === 4} /></div>
-          </>
-        )}
+      {/* Tab content — no z-index here: it would trap the tabs' fixed modals
+          in a stacking context below the bottom nav. */}
+      <div className="flex-1 overflow-auto relative">
+        {workoutModeActive && <WorkoutMode currentView={workoutModeTab} />}
+        {/* Tabs stay mounted (just hidden) during workout mode so their state and
+            in-flight requests survive the round trip. */}
+        <div style={{ display: show(0) ? 'block' : 'none', height: '100%' }}>
+          <WorkoutTab onEnterWorkoutMode={() => { setWorkoutModeActive(true); setWorkoutModeTab('today') }} />
+        </div>
+        <div style={{ display: show(1) ? 'block' : 'none', height: '100%' }}><FoodWaterTab /></div>
+        <div style={{ display: show(2) ? 'block' : 'none', height: '100%' }}><OverviewTab /></div>
+        <div style={{ display: show(3) ? 'block' : 'none', height: '100%' }}><SleepTab /></div>
+        <div style={{ display: show(4) ? 'block' : 'none', height: '100%' }}><LogTab isActive={activeTab === 4} /></div>
       </div>
 
       {/* Bottom Navigation */}
@@ -382,7 +486,12 @@ function AppShell() {
           <>
             {/* Back button */}
             <button
-              onClick={() => setWorkoutModeActive(false)}
+              onClick={() => {
+                // Exit immediately; popping our own entry is then a no-op (the
+                // listener is gone), and a double-tap can't pop past the app.
+                setWorkoutModeActive(false)
+                if (history.state?.mode === 'workout') history.back()
+              }}
               className="monument-button flex flex-col items-center gap-1"
               style={{ background: 'transparent', border: 'none', padding: '4px' }}
               aria-label="Back"
@@ -390,7 +499,7 @@ function AppShell() {
               <div className="flex items-center justify-center" style={{ width: '32px', height: '32px', borderRadius: '50%' }}>
                 <ChevronLeft size={22} color="#8B5A3E" strokeWidth={2.5} />
               </div>
-              <span className="monument-text" style={{ fontSize: '8px', fontWeight: '700', color: '#A0725A', letterSpacing: '0.5px' }}>BACK</span>
+              <span className="monument-text" style={{ fontSize: '8px', fontWeight: '700', color: '#8B5A3E', letterSpacing: '0.5px' }}>BACK</span>
             </button>
 
             {/* Today tab */}
@@ -419,7 +528,7 @@ function AppShell() {
                       : <Calendar size={isActive ? 22 : 18} color={isActive ? '#6B4423' : '#8B5A3E'} strokeWidth={2} />
                     }
                   </div>
-                  <span className="monument-text" style={{ fontSize: '8px', fontWeight: '700', color: isActive ? '#FF9F66' : '#A0725A', letterSpacing: '0.5px' }}>
+                  <span className="monument-text" style={{ fontSize: '8px', fontWeight: '700', color: isActive ? '#6B4423' : '#8B5A3E', letterSpacing: '0.5px' }}>
                     {view.toUpperCase()}
                   </span>
                 </button>
@@ -455,7 +564,7 @@ function AppShell() {
                 >
                   <Icon size={isActive ? 22 : 18} color={isActive ? '#6B4423' : '#8B5A3E'} strokeWidth={2} />
                 </div>
-                <span className="monument-text" style={{ fontSize: '8px', fontWeight: '700', color: isActive ? '#FF9F66' : '#A0725A', letterSpacing: '0.5px' }}>
+                <span className="monument-text" style={{ fontSize: '8px', fontWeight: '700', color: isActive ? '#6B4423' : '#8B5A3E', letterSpacing: '0.5px' }}>
                   {tab.name.split('+')[0]}
                 </span>
               </button>

@@ -4,8 +4,8 @@
 // (activity_and_fitness.readonly) already covers this data type.
 
 import { requireUser } from './_auth.js'
+import { getAccessToken, googleFetch, parseDay, sendGoogleError } from './_googleHealth.js'
 
-const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const CALORIES_URL = 'https://health.googleapis.com/v4/users/me/dataTypes/total-calories/dataPoints:dailyRollUp'
 
 interface Req {
@@ -16,31 +16,6 @@ interface Req {
 interface Res {
   status(code: number): Res
   json(body: unknown): void
-}
-
-async function getAccessToken(clientId: string, clientSecret: string, refreshToken: string): Promise<string> {
-  const res = await fetch(TOKEN_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-      grant_type: 'refresh_token',
-    }),
-  })
-  const data = await res.json()
-  if (!res.ok || !data.access_token) {
-    throw new Error(data.error_description ?? data.error ?? 'Google token refresh failed')
-  }
-  return data.access_token as string
-}
-
-/** The `end` of a CivilTimeInterval is exclusive, so a single day is [date, date+1). */
-function nextDay(year: number, month: number, day: number): { year: number; month: number; day: number } {
-  const d = new Date(Date.UTC(year, month - 1, day))
-  d.setUTCDate(d.getUTCDate() + 1)
-  return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() }
 }
 
 export default async function handler(req: Req, res: Res) {
@@ -58,34 +33,31 @@ export default async function handler(req: Req, res: Res) {
     return
   }
 
-  const dateParam = req.query?.date
-  const date = typeof dateParam === 'string' ? dateParam : ''
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date)
-  if (!match) {
-    res.status(400).json({ error: 'date query param must be YYYY-MM-DD' })
+  const day = parseDay(req.query?.date)
+  if (!day) {
+    res.status(400).json({ error: 'date query param must be a valid YYYY-MM-DD date' })
     return
   }
-  const year = Number(match[1]), month = Number(match[2]), day = Number(match[3])
-  const start = { date: { year, month, day } }
-  const end = { date: nextDay(year, month, day) }
+  // The `end` of a CivilTimeInterval is exclusive, so a single day is [date, date+1).
+  const start = { date: day.date }
+  const end = { date: day.next }
 
   try {
     const accessToken = await getAccessToken(clientId, clientSecret, refreshToken)
-    const upstream = await fetch(CALORIES_URL, {
+    const { ok, status, data } = await googleFetch(CALORIES_URL, {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ range: { start, end }, windowSizeDays: 1 }),
     })
-    const data = await upstream.json()
-    if (!upstream.ok) {
-      res.status(upstream.status).json({ error: data.error?.message ?? 'Google Health request failed' })
+    if (!ok) {
+      res.status(status).json({ error: data?.error?.message ?? 'Google Health request failed' })
       return
     }
     interface RollupPoint { totalCalories?: { kcalSum?: number } }
-    const points: RollupPoint[] = data.rollupDataPoints ?? []
+    const points: RollupPoint[] = data?.rollupDataPoints ?? []
     const kcal = points.reduce((sum, p) => sum + (p.totalCalories?.kcalSum ?? 0), 0)
     res.status(200).json({ kcal: Math.round(kcal) })
   } catch (e) {
-    res.status(502).json({ error: e instanceof Error ? e.message : 'Google Health request failed' })
+    sendGoogleError(res, e, 'google-health-calories')
   }
 }

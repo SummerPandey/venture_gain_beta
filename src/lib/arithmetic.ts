@@ -8,5 +8,6 @@ export function evalPlusMinus(input: string): number | null {
   const terms = s.match(/[+-]?\d*\.?\d+/g)
   if (!terms) return null
   const result = terms.reduce((sum, t) => sum + parseFloat(t), 0)
-  return Number.isFinite(result) ? result : null
+  // Strip binary float noise (0.1+0.2 -> 0.3, not 0.30000000000000004).
+  return Number.isFinite(result) ? Math.round(result * 1e6) / 1e6 : null
 }

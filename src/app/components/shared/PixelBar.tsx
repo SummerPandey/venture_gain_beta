@@ -38,21 +38,29 @@ export function PixelBar({
   overThreshold,
   overColor = '#E57373',
 }: PixelBarProps) {
-  const percentage = (value / max) * 100
-  const targetPercentage = target ? (target / max) * 100 : null
+  // Bad inputs (NaN, negative, max 0) would emit invalid CSS widths, which the
+  // browser drops — leaving a full bar for an empty state.
+  const safeValue = Number.isFinite(value) ? value : 0
+  const safeTarget = target !== undefined && Number.isFinite(target) ? target : undefined
+  const clampPct = (n: number) => Math.min(100, Math.max(0, n))
+  const ratio = (n: number) => (Number.isFinite(max) && max > 0 ? n / max : 0)
+  const percentage = clampPct(ratio(safeValue) * 100)
+  const targetPercentage = safeTarget ? clampPct(ratio(safeTarget) * 100) : null
 
-  const effectiveColor = (overThreshold !== undefined && value > overThreshold) ? overColor : color
+  const isOver = overThreshold !== undefined && safeValue > overThreshold
+  const effectiveColor = isOver ? overColor : color
   const gradientEnd = GRADIENT_MAP[effectiveColor] ?? effectiveColor
 
-  const displayValue = unit === 'L' ? value.toFixed(1) : Math.round(value)
-  const displayTarget = unit === 'L' ? target?.toFixed(1) : target
+  const displayValue = unit === 'L' ? safeValue.toFixed(1) : Math.round(safeValue)
+  const displayTarget = unit === 'L' ? safeTarget?.toFixed(1) : safeTarget
+  const valueText = `${displayValue}${unit}${safeTarget !== undefined ? ` of ${displayTarget}${unit}` : ''}${isOver ? ', over limit' : ''}`
 
   return (
     <div className="mb-5">
       <div className="flex items-center gap-3 mb-2">
         {icon && (
           <div
-            className="p-2"
+            className="p-2 flex-shrink-0"
             style={{
               background: 'linear-gradient(135deg, rgba(255, 193, 148, 0.3) 0%, rgba(255, 207, 163, 0.3) 100%)',
               border: '2px solid #8B5A3E',
@@ -64,19 +72,26 @@ export function PixelBar({
             {icon}
           </div>
         )}
-        <div className="flex justify-between items-center flex-1">
-          <span className="monument-text" style={{ color: '#6B4423', fontSize: '11px', fontWeight: '700' }}>
+        <div className="flex justify-between items-center flex-1 min-w-0 gap-2">
+          <span className="monument-text min-w-0 truncate" style={{ color: '#6B4423', fontSize: '11px', fontWeight: '700' }}>
             {label}
           </span>
-          <span className="monument-text" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700' }}>
+          <span className="monument-text whitespace-nowrap" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>
             {displayValue}{unit}
-            {target !== undefined && ` / ${displayTarget}${unit}`}
+            {safeTarget !== undefined && ` / ${displayTarget}${unit}`}
+            {isOver && <span style={{ color: '#C0504D' }}> · OVER</span>}
           </span>
         </div>
       </div>
 
       <div
-        className="w-full h-3 relative overflow-hidden"
+        className="w-full h-3 relative"
+        role="progressbar"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={max}
+        aria-valuenow={safeValue}
+        aria-valuetext={valueText}
         style={{
           background: 'rgba(255, 184, 138, 0.2)',
           borderRadius: '10px',

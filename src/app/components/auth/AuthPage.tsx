@@ -18,15 +18,16 @@ export function AuthPage() {
     border: '2px solid #8B5A3E',
     borderRadius: '14px',
     color: '#6B4423',
-    fontSize: '14px',
+    // 16px stops iOS Safari from zooming the page when a field is focused
+    fontSize: '16px',
     fontWeight: '600',
     boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)',
-    outline: 'none',
     fontFamily: 'Poppins, sans-serif',
   } as const
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (loading) return
     setError(null)
     setSuccess(null)
     setLoading(true)
@@ -37,24 +38,32 @@ export function AuthPage() {
       return
     }
 
-    if (mode === 'signup') {
-      const { error, session } = await signUp(email, password)
-      setLoading(false)
-      if (error) { setError(error.message); return }
-      // With email confirmation off, Supabase returns a session and the auth
-      // listener logs the user straight in — nothing more to do here.
-      if (!session) {
-        // Confirmation is still enabled on the project; fall back to sign-in.
-        setSuccess('Account created! You can sign in now.')
-        setMode('signin')
+    try {
+      if (mode === 'signup') {
+        const { error, session } = await signUp(email, password)
+        if (error) { setError(error.message); return }
+        // With email confirmation off, Supabase returns a session and the auth
+        // listener logs the user straight in — nothing more to do here.
+        if (!session) {
+          // Confirmation is enabled on the project (Supabase also answers this
+          // way for an already-registered email), so keep the wording neutral.
+          setSuccess('Check your email to confirm your account, then sign in.')
+          setMode('signin')
+        }
+        return
       }
-      return
-    }
 
-    const { error } = await signIn(email, password)
-    setLoading(false)
-    if (error) setError(error.message)
+      const { error } = await signIn(email, password)
+      if (error) setError(error.message)
+    } catch (err) {
+      console.error('[auth] submit failed:', err)
+      setError('Something went wrong. Please try again.')
+    } finally {
+      setLoading(false)
+    }
   }
+
+  const labelStyle = { color: '#8B5A3E', fontSize: '10px', fontWeight: '700' } as const
 
   return (
     <div
@@ -93,11 +102,13 @@ export function AuthPage() {
           {(['signin', 'signup'] as const).map(m => (
             <button
               key={m}
+              type="button"
               onClick={() => { setMode(m); setError(null); setSuccess(null) }}
-              className="monument-button flex-1 py-2"
+              aria-pressed={mode === m}
+              className="monument-button flex-1 py-3"
               style={mode === m
-                ? { background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '10px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)' }
-                : { background: 'rgba(255, 252, 248, 0.95)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '10px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)' }
+                ? { background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '12px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)' }
+                : { background: 'rgba(255, 252, 248, 0.95)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '12px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)' }
               }
             >
               {m === 'signin' ? 'SIGN IN' : 'SIGN UP'}
@@ -107,9 +118,13 @@ export function AuthPage() {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="monument-text block mb-2" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>EMAIL</label>
+            <label htmlFor="auth-email" className="monument-text block mb-2" style={labelStyle}>EMAIL</label>
             <input
+              id="auth-email"
               type="email"
+              autoComplete="email"
+              autoCapitalize="none"
+              spellCheck={false}
               value={email}
               onChange={e => setEmail(e.target.value)}
               placeholder="you@example.com"
@@ -118,9 +133,11 @@ export function AuthPage() {
             />
           </div>
           <div>
-            <label className="monument-text block mb-2" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>PASSWORD</label>
+            <label htmlFor="auth-password" className="monument-text block mb-2" style={labelStyle}>PASSWORD</label>
             <input
+              id="auth-password"
               type="password"
+              autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
               value={password}
               onChange={e => setPassword(e.target.value)}
               placeholder="••••••••"
@@ -131,9 +148,12 @@ export function AuthPage() {
 
           {mode === 'signup' && (
             <div>
-              <label className="monument-text block mb-2" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>INVITE CODE</label>
+              <label htmlFor="auth-invite" className="monument-text block mb-2" style={labelStyle}>INVITE CODE</label>
               <input
+                id="auth-invite"
                 type="text"
+                inputMode="numeric"
+                autoComplete="off"
                 value={inviteCode}
                 onChange={e => setInviteCode(e.target.value)}
                 placeholder="Enter code"
@@ -144,24 +164,25 @@ export function AuthPage() {
           )}
 
           {error && (
-            <div className="monument-text px-3 py-2 text-center" style={{ background: 'rgba(211, 47, 47, 0.1)', border: '2px solid rgba(211, 47, 47, 0.3)', borderRadius: '10px', color: '#D32F2F', fontSize: '10px', fontWeight: '700' }}>
+            <div role="alert" className="monument-text px-3 py-2 text-center" style={{ background: 'rgba(211, 47, 47, 0.1)', border: '2px solid rgba(211, 47, 47, 0.3)', borderRadius: '10px', color: '#D32F2F', fontSize: '10px', fontWeight: '700' }}>
               {error}
             </div>
           )}
 
           {success && (
-            <div className="monument-text px-3 py-2 text-center" style={{ background: 'rgba(76, 175, 80, 0.1)', border: '2px solid rgba(76, 175, 80, 0.3)', borderRadius: '10px', color: '#2E7D32', fontSize: '10px', fontWeight: '700' }}>
+            <div role="status" aria-live="polite" className="monument-text px-3 py-2 text-center" style={{ background: 'rgba(76, 175, 80, 0.1)', border: '2px solid rgba(76, 175, 80, 0.3)', borderRadius: '10px', color: '#2E7D32', fontSize: '10px', fontWeight: '700' }}>
               {success}
             </div>
           )}
 
           <button
             type="submit"
-            disabled={loading}
+            aria-disabled={loading}
+            aria-busy={loading}
             className="monument-button w-full py-3 mt-2"
             style={{ background: loading ? 'rgba(255, 184, 138, 0.5)' : 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '14px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '12px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)' }}
           >
-            {loading ? '...' : mode === 'signin' ? 'SIGN IN' : 'CREATE ACCOUNT'}
+            {loading ? (mode === 'signin' ? 'SIGNING IN...' : 'CREATING...') : mode === 'signin' ? 'SIGN IN' : 'CREATE ACCOUNT'}
           </button>
         </form>
       </div>

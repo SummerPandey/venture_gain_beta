@@ -12,6 +12,26 @@ export function getStreakDays(): number {
   return Math.round((today.getTime() - start.getTime()) / 86400000)
 }
 
+/** Whole streak years completed as of today (calendar-based, so leap days don't drift). */
+export function getStreakYearsCompleted(): number {
+  const now = new Date()
+  const { year, month, day } = STREAK_START_DATE
+  const beforeAnniversary = now.getMonth() < month || (now.getMonth() === month && now.getDate() < day)
+  return now.getFullYear() - year - (beforeAnniversary ? 1 : 0)
+}
+
+/** Days until the next March 23 anniversary. On the anniversary itself this counts to
+ *  the following year's (365 or 366), since today's year has just been completed. */
+export function daysUntilNextAnniversary(): number {
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  let next = new Date(today.getFullYear(), STREAK_START_DATE.month, STREAK_START_DATE.day)
+  if (next.getTime() <= today.getTime()) {
+    next = new Date(today.getFullYear() + 1, STREAK_START_DATE.month, STREAK_START_DATE.day)
+  }
+  return Math.round((next.getTime() - today.getTime()) / 86400000)
+}
+
 export const LEVEL = 8
 export const CURRENT_MOMENTUM = 642
 export const NEXT_LEVEL_MOMENTUM = 700

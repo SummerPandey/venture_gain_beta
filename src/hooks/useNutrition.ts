@@ -66,19 +66,50 @@ export function useNutrition() {
   const userModified = useRef(false)
   const userRef = useRef(user)
   useEffect(() => { userRef.current = user }, [user])
-  const pendingNutrition = useRef<Record<string, unknown> | null>(null)
+  // Debounced, not-yet-saved edit — tagged with its owner so a sign-out/sign-in
+  // can never flush one account's totals into another account's row.
+  const pendingNutrition = useRef<{ userId: string; fields: Record<string, unknown> } | null>(null)
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Date this hook's data was loaded for — used to detect a midnight rollover
   // while the PWA stays resident in memory (it never remounts on reopen).
   const loadedDate = useRef<string>('')
+  // True while today's row is being (re)fetched — edits are ignored meanwhile,
+  // since the incoming response would overwrite them anyway.
+  const loadingRef = useRef(false)
+  const loadSeq = useRef(0)
+  // All writes go through one promise chain so they reach the DB in the order
+  // they were made; only the newest write's result drives the error banner.
+  const writeChain = useRef<Promise<unknown>>(Promise.resolve())
+  const writeSeq = useRef(0)
+  const lastFitbitFetch = useRef(0)
 
-  const fetchToday = (userId: string) =>
+  const save = (userId: string, fields: Record<string, unknown>): Promise<string | null> => {
+    const seq = ++writeSeq.current
+    const p = writeChain.current.then(() => upsertDay(userId, fields))
+    writeChain.current = p.catch(() => null)
+    return p.then(
+      err => { if (seq === writeSeq.current || err) setSaveError(err); return err },
+      e => { const msg = e instanceof Error ? e.message : String(e); setSaveError(msg); return msg },
+    )
+  }
+
+  /** Resolves true when today's row loaded; on a failed read nothing is reset,
+   *  so a network blip can't turn into a "fresh empty day" that the next
+   *  auto-save writes over the real totals. */
+  const fetchToday = (userId: string, seq: number) =>
     supabase
       .from('daily_logs')
       .select('water_liters, calories, protein_grams, sugar_grams, creatine_taken')
       .eq('user_id', userId)
       .eq('log_date', getToday())
       .order('log_date')
-      .then(({ data: rows }) => {
+      .then(({ data: rows, error }) => {
+        if (seq !== loadSeq.current) return false
+        if (error) {
+          console.error('[nutrition] load error:', error)
+          setSaveError("Couldn't load today's totals — tap retry")
+          return false
+        }
         const data = rows?.length ? rows[rows.length - 1] : null
         // Always reset to the DB's authoritative values for today — a missing
         // row means a fresh day, so everything goes back to 0.
@@ -94,14 +125,27 @@ export function useNutrition() {
         prevWater.current = Number(data?.water_liters) || 0
         prevCalories.current = Number(data?.calories) || 0
         prevProtein.current = Number(data?.protein_grams) || 0
+        return true
       })
 
-  const loadAll = (userId: string) => {
+  const loadAll = (userId: string): Promise<boolean> => {
+    const seq = ++loadSeq.current
     userModified.current = false
+    loadingRef.current = true
+    setLoaded(false)
     loadedDate.current = getToday()
     const weekStart = getWeekStart()
 
-    const p = fetchToday(userId)
+    const p = Promise.resolve(fetchToday(userId, seq)).then(ok => {
+      if (seq !== loadSeq.current) return ok
+      loadingRef.current = false
+      setLoaded(ok)
+      if (ok) setSaveError(prev => (prev?.startsWith("Couldn't load") ? null : prev))
+      return ok
+    }, () => {
+      if (seq === loadSeq.current) { loadingRef.current = false; setSaveError("Couldn't load today's totals — tap retry") }
+      return false
+    })
 
     supabase
       .from('daily_logs')
@@ -110,7 +154,7 @@ export function useNutrition() {
       .gte('log_date', weekStart)
       .order('log_date')
       .then(({ data }) => {
-        if (!data) return
+        if (!data || seq !== loadSeq.current) return
         const todayRows = data.filter(r => r.log_date === getToday())
         const todayVal = todayRows.length ? todayRows[todayRows.length - 1].multivitamins ?? 0 : 0
         const otherDays = data.filter(r => r.log_date !== getToday())
@@ -122,17 +166,36 @@ export function useNutrition() {
     return p
   }
 
-  // Load from Supabase on mount
+  // Load from Supabase on mount / account change
   useEffect(() => {
-    if (!user) { setLoaded(true); return }
-    loadAll(user.id).then(() => setLoaded(true))
+    // A pending edit belongs to whoever made it — never carry it across accounts.
+    if (pendingNutrition.current && pendingNutrition.current.userId !== user?.id) pendingNutrition.current = null
+    if (!user) { loadSeq.current++; loadingRef.current = false; setLoaded(true); return }
+    loadAll(user.id)
   }, [user?.id])
 
   const flushPendingNutrition = () => {
-    if (pendingNutrition.current && userRef.current) {
-      upsertDay(userRef.current.id, pendingNutrition.current).then(err => { if (err) setSaveError(err) })
-      pendingNutrition.current = null
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null }
+    const pending = pendingNutrition.current
+    pendingNutrition.current = null
+    if (pending && userRef.current?.id === pending.userId) save(pending.userId, pending.fields)
+  }
+
+  /** Call before applying an edit. Returns true (and reloads) when the edit must
+   *  be dropped: today's row is still loading, or the day rolled over while the
+   *  app stayed open — otherwise yesterday's totals would be saved into today. */
+  const blockEdit = () => {
+    if (loadingRef.current) return true
+    const u = userRef.current
+    // Today's row never loaded (see fetchToday) — editing on top of placeholder
+    // zeros would overwrite the real totals once it's saved.
+    if (u && !loaded) return true
+    if (u && loadedDate.current && getToday() !== loadedDate.current) {
+      flushPendingNutrition()
+      loadAll(u.id)
+      return true
     }
+    return false
   }
 
   // Reset/reload when the app returns to the foreground on a new calendar day.
@@ -150,6 +213,9 @@ export function useNutrition() {
       const u = userRef.current
       if (!u) return
       if (getToday() !== loadedDate.current) loadAll(u.id)
+      // Fitbit's burned total keeps climbing through the day — refresh it on
+      // return when it's stale or last failed.
+      if (Date.now() - lastFitbitFetch.current > 5 * 60_000) refreshFitbitCalories()
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     window.addEventListener('focus', onVisibilityChange)
@@ -167,19 +233,26 @@ export function useNutrition() {
     const { waterLiters, calories, proteinGrams, sugarGrams } = state
     // calories/protein/sugar/multivitamins are `integer` columns — round
     // defensively here too, since this is the actual DB write boundary.
+    // log_date is frozen to the day this data belongs to, so a flush that
+    // fires after midnight can't land in the next day's row.
     const fields = {
+      log_date: loadedDate.current || getToday(),
       water_liters: waterLiters,
       calories: Math.round(calories),
       protein_grams: Math.round(proteinGrams),
       sugar_grams: Math.round(sugarGrams),
       multivitamins: Math.round(todayMultivitamins),
     }
-    pendingNutrition.current = fields
+    const pending = { userId: user.id, fields }
+    pendingNutrition.current = pending
     const id = setTimeout(() => {
-      upsertDay(user.id, fields).then(err => setSaveError(err))
+      saveTimer.current = null
+      if (pendingNutrition.current !== pending) return // already flushed
       pendingNutrition.current = null
+      save(user.id, fields)
     }, 600)
-    return () => clearTimeout(id)
+    saveTimer.current = id
+    return () => { clearTimeout(id); if (saveTimer.current === id) saveTimer.current = null }
   }, [state.waterLiters, state.calories, state.proteinGrams, state.sugarGrams, todayMultivitamins, loaded, user?.id])
 
   // Last-resort flush on a genuine unmount (e.g. sign-out) — the visibilitychange/
@@ -197,7 +270,9 @@ export function useNutrition() {
   /** Pulls today's total calories burned (BMR + activity) from the Google Health proxy
    *  — an informational read next to calories eaten, not something the user edits. */
   const refreshFitbitCalories = () => {
-    setCaloriesBurnedStatus(prev => (prev === 'connected' ? prev : 'loading'))
+    if (!userRef.current) return
+    lastFitbitFetch.current = Date.now()
+    setCaloriesBurnedStatus(prev => (prev === 'error' ? 'loading' : prev))
     fetchCaloriesBurned(getToday())
       .then(kcal => {
         setCaloriesBurned(kcal)
@@ -243,46 +318,74 @@ export function useNutrition() {
     }
   }, [state.proteinGrams, settings.proteinTarget])
 
-  const clamp = (val: number, min: number, max: number) => Math.min(max, Math.max(min, val))
+  /** Non-finite input (NaN, a stray string from AI output) clamps to `min`
+   *  instead of leaking NaN into state and the DB. */
+  const clamp = (val: number, min: number, max: number) => {
+    const n = Number(val)
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : min
+  }
 
-  /** Re-attempts the last save immediately, for a "tap to retry" banner. */
+  /** Re-attempts the last save immediately, for a "tap to retry" banner.
+   *  If today's totals never loaded, retries the load instead — saving would
+   *  overwrite the real row with this screen's empty placeholders. */
   const retrySave = () => {
     if (!user) return
+    if (!loaded) { loadAll(user.id); return }
     const { waterLiters, calories, proteinGrams, sugarGrams } = state
-    upsertDay(user.id, {
+    save(user.id, {
+      log_date: loadedDate.current || getToday(),
       water_liters: waterLiters,
       calories: Math.round(calories),
       protein_grams: Math.round(proteinGrams),
       sugar_grams: Math.round(sugarGrams),
       multivitamins: Math.round(todayMultivitamins),
-    }).then(err => setSaveError(err))
+    })
   }
 
   const saveVitamins = (newTodayCount: number) => {
     if (!user) return
-    upsertDay(user.id, { multivitamins: newTodayCount }).then(err => setSaveError(err))
+    save(user.id, { multivitamins: Math.round(newTodayCount) })
   }
 
+  const creatineSeq = useRef(0)
   const toggleCreatine = async () => {
+    if (blockEdit()) return
     const next = !creatineTaken
+    const seq = ++creatineSeq.current
     setCreatineTaken(next)
     if (user) {
-      const err = await upsertDay(user.id, { creatine_taken: next })
-      setSaveError(err)
+      const err = await save(user.id, { creatine_taken: next })
+      // Roll back the optimistic toggle if this (still latest) write failed.
+      if (err && seq === creatineSeq.current) setCreatineTaken(!next)
     }
   }
 
-  const adjustWater = (delta: number) => { userModified.current = true; setState(s => ({ ...s, waterLiters: clamp(s.waterLiters + delta, 0, WATER_MAX) })) }
-  const setWater = (val: number) => { userModified.current = true; setState(s => ({ ...s, waterLiters: clamp(val, 0, WATER_MAX) })) }
-  const adjustCalories = (delta: number) => { userModified.current = true; setState(s => ({ ...s, calories: clamp(s.calories + delta, 0, CALORIES_MAX) })) }
-  const setCalories = (val: number) => { userModified.current = true; setState(s => ({ ...s, calories: clamp(val, 0, CALORIES_MAX) })) }
-  const adjustProtein = (delta: number) => { userModified.current = true; setState(s => ({ ...s, proteinGrams: clamp(s.proteinGrams + delta, 0, PROTEIN_MAX) })) }
-  const setProtein = (val: number) => { userModified.current = true; setState(s => ({ ...s, proteinGrams: clamp(val, 0, PROTEIN_MAX) })) }
-  const adjustSugar = (delta: number) => { userModified.current = true; setState(s => ({ ...s, sugarGrams: clamp(s.sugarGrams + delta, 0, SUGAR_MAX) })) }
-  const setSugar = (val: number) => { userModified.current = true; setState(s => ({ ...s, sugarGrams: clamp(val, 0, SUGAR_MAX) })) }
+  /** Applies a nutrition edit unless it must be dropped (see blockEdit). */
+  const edit = (fn: (s: NutritionState) => NutritionState) => {
+    if (blockEdit()) return
+    userModified.current = true
+    setState(fn)
+  }
+
+  // calories/protein/sugar are integer columns — round here so what's shown
+  // (and what the goal celebrations see) matches what gets saved.
+  const adjustWater = (delta: number) => edit(s => ({ ...s, waterLiters: clamp(s.waterLiters + delta, 0, WATER_MAX) }))
+  const setWater = (val: number) => edit(s => ({ ...s, waterLiters: clamp(Math.round(val * 100) / 100, 0, WATER_MAX) }))
+  const adjustCalories = (delta: number) => edit(s => ({ ...s, calories: clamp(s.calories + delta, 0, CALORIES_MAX) }))
+  const setCalories = (val: number) => edit(s => ({ ...s, calories: clamp(Math.round(val), 0, CALORIES_MAX) }))
+  const adjustProtein = (delta: number) => edit(s => ({ ...s, proteinGrams: clamp(s.proteinGrams + delta, 0, PROTEIN_MAX) }))
+  const setProtein = (val: number) => edit(s => ({ ...s, proteinGrams: clamp(Math.round(val), 0, PROTEIN_MAX) }))
+  const adjustSugar = (delta: number) => edit(s => ({ ...s, sugarGrams: clamp(s.sugarGrams + delta, 0, SUGAR_MAX) }))
+  const setSugar = (val: number) => edit(s => ({ ...s, sugarGrams: clamp(Math.round(val), 0, SUGAR_MAX) }))
+
+  // Only today's row can be changed from here, so the weekly count can't drop
+  // below what earlier days already hold — otherwise a decrement "works" and
+  // then reverts on the next reload.
+  const weeklyFloor = () => Math.max(0, weeklyMultivitamins - todayMultivitamins)
 
   const adjustMultivitamins = (delta: number) => {
-    const newWeekly = Math.min(NUTRITION_LIMITS.multivitaminTarget, Math.max(0, weeklyMultivitamins + delta))
+    if (blockEdit()) return
+    const newWeekly = Math.min(NUTRITION_LIMITS.multivitaminTarget, Math.max(weeklyFloor(), weeklyMultivitamins + delta))
     const actualDelta = newWeekly - weeklyMultivitamins
     if (actualDelta === 0) return
     const newToday = Math.max(0, todayMultivitamins + actualDelta)
@@ -295,7 +398,8 @@ export function useNutrition() {
   }
 
   const setMultivitamins = (val: number) => {
-    const newWeekly = Math.min(NUTRITION_LIMITS.multivitaminTarget, Math.max(0, val))
+    if (blockEdit()) return
+    const newWeekly = Math.round(clamp(val, weeklyFloor(), NUTRITION_LIMITS.multivitaminTarget))
     const actualDelta = newWeekly - weeklyMultivitamins
     const newToday = Math.max(0, todayMultivitamins + actualDelta)
     setTodayMultivitamins(newToday)
@@ -306,10 +410,15 @@ export function useNutrition() {
   const simulateAIScan = () => setState(s => ({ ...s, uploadedImage: 'scanned' }))
 
   const approveScan = (water: number, calories: number, protein: number, sugar: number) => {
+    if (blockEdit()) return
+    // Coerce — AI output can carry numeric strings ("300"), and `n + "300"`
+    // would concatenate instead of add.
+    const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
+    water = num(water); calories = num(calories); protein = num(protein); sugar = num(sugar)
     userModified.current = true
     setState(s => ({
       ...s,
-      waterLiters: clamp(s.waterLiters + water, 0, WATER_MAX),
+      waterLiters: clamp(Math.round((s.waterLiters + water) * 100) / 100, 0, WATER_MAX),
       // calories/protein/sugar are `integer` columns in daily_logs — AI-estimated
       // values (e.g. "30.4g protein") must be rounded here or the whole day's
       // upsert fails with a Postgres type error, silently dropping water too
@@ -349,5 +458,6 @@ export function useNutrition() {
     toggleCreatine,
     simulateAIScan, approveScan, dismissScan,
     saveError, retrySave,
+    refreshFitbitCalories,
   }
 }

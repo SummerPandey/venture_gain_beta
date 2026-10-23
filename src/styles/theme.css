@@ -126,6 +126,14 @@
 
   body {
     @apply bg-background text-foreground;
+    /* Match the app shell so iOS overscroll and safe-area bands aren't white */
+    background-color: #F5E6D3;
+  }
+
+  /* Visible keyboard focus on the cream background (the default ring is ~1.2:1) */
+  :focus-visible {
+    outline: 2px solid #6B4423;
+    outline-offset: 2px;
   }
 
   /**
@@ -197,13 +205,26 @@
     font-weight: 700;
   }
 
-  .monument-button {
-    transition: all 0.3s ease;
+  /* Free-form text (chat bubbles): Poppins without monument-text's forced caps */
+  .chat-text {
+    font-family: 'Poppins', sans-serif;
+    font-weight: 600;
+    letter-spacing: normal;
+    text-transform: none;
   }
 
-  .monument-button:hover {
-    transform: translateY(-2px);
-    filter: brightness(1.1);
+  .monument-button {
+    transition: all 0.3s ease;
+    /* Rapid stepper taps shouldn't trigger iOS double-tap zoom; pinch-zoom still works */
+    touch-action: manipulation;
+  }
+
+  /* Real pointers only: on touch, :hover sticks after the tap and leaves buttons lifted */
+  @media (hover: hover) and (pointer: fine) {
+    .monument-button:hover {
+      transform: translateY(-2px);
+      filter: brightness(1.1);
+    }
   }
 
   .monument-button:active {
@@ -261,9 +282,10 @@
     animation: celebration-slide 2.5s ease-in-out forwards;
   }
 
+  /* Uses the individual `scale` property so it composes with float's `transform` */
   @keyframes chimchar-pulse {
-    0%, 100% { transform: scale(1); }
-    50%       { transform: scale(1.06); }
+    0%, 100% { scale: 1; }
+    50%       { scale: 1.06; }
   }
 
   .chimchar-fired-up {
@@ -284,5 +306,48 @@
   .chimchar-resting {
     filter: grayscale(0.6) brightness(0.75);
     animation: float 7s ease-in-out infinite;
+  }
+
+  /* Mood colouring comes from the filters above, so it survives with motion off */
+  @media (prefers-reduced-motion: reduce) {
+    .float-animation,
+    .soft-pulse,
+    .cute-character,
+    .celebration-banner,
+    .chimchar-fired-up,
+    .chimchar-happy,
+    .chimchar-tired,
+    .chimchar-resting {
+      animation: none;
+    }
+
+    /* Keep a motion-free fade so the banner doesn't vanish abruptly at 2.5s */
+    .celebration-banner {
+      animation: celebration-fade 2.5s ease-in-out forwards;
+    }
+
+    .monument-button,
+    .monument-button:hover,
+    .monument-button:active {
+      transition: none;
+      transform: none;
+    }
+  }
+
+  @keyframes celebration-fade {
+    0%   { opacity: 0; }
+    12%  { opacity: 1; }
+    80%  { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  /* iOS Safari zooms the page when focusing an input under 16px. Inline styles
+     set smaller sizes, hence !important; scoped to touch so desktop is unchanged. */
+  @media (hover: none) and (pointer: coarse) {
+    input:not([type="file"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+    textarea,
+    select {
+      font-size: 16px !important;
+    }
   }
 }

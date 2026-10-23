@@ -18,16 +18,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null)
-      setLoading(false)
-    })
+    // Always clear loading — a rejected session read (e.g. blocked storage)
+    // should land on the sign-in page, not an endless "Loading...".
+    // If the read hangs on a flaky network, stop blocking after a few seconds;
+    // a late session still signs the user in via setUser / onAuthStateChange.
+    const timeout = setTimeout(() => setLoading(false), 8000)
+    supabase.auth.getSession()
+      .then(({ data: { session } }) => setUser(session?.user ?? null))
+      .catch((err) => { console.error('[auth] session read failed:', err); setUser(null) })
+      .finally(() => { clearTimeout(timeout); setLoading(false) })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
     })
 
-    return () => subscription.unsubscribe()
+    return () => { clearTimeout(timeout); subscription.unsubscribe() }
   }, [])
 
   const signIn = async (email: string, password: string) => {

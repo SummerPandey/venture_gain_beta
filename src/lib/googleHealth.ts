@@ -21,7 +21,8 @@ export function getGoogleHealthAuthUrl(): string {
   const clientId = import.meta.env.VITE_GOOGLE_HEALTH_CLIENT_ID ?? ''
   const redirectUri = `${window.location.origin}${CALLBACK_PATH}`
   // CSRF protection: the callback only accepts a `state` matching this one-shot cookie.
-  const state = crypto.randomUUID()
+  // getRandomValues (unlike randomUUID) also works on plain-http LAN dev origins.
+  const state = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('')
   const secure = window.location.protocol === 'https:' ? '; Secure' : ''
   document.cookie = `gh_oauth_state=${state}; Path=${CALLBACK_PATH}; Max-Age=600; SameSite=Lax${secure}`
   const params = new URLSearchParams({
@@ -37,47 +38,62 @@ export function getGoogleHealthAuthUrl(): string {
 }
 
 export class GoogleHealthNotConnectedError extends Error {}
+/** The caller's Supabase session is missing/expired, so the proxy rejected it. */
+export class SessionExpiredError extends Error {}
+
+// A stalled mobile connection would otherwise leave sync status on 'loading'
+// until remount; on timeout the caller's catch moves it to 'error'.
+const HEALTH_TIMEOUT_MS = 20000
+
+/** GET one of the /api/google-health-* proxies and return `data[field]` as a
+ *  number. 428 → not connected, 401 → session expired, timeout/non-2xx/bad
+ *  shape → Error, so callers never see undefined/NaN. */
+async function fetchHealthNumber(path: string, date: string, field: string, label: string): Promise<number> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS)
+  try {
+    let res: Response
+    try {
+      res = await fetch(`${path}?date=${encodeURIComponent(date)}`, { headers: await apiHeaders(), signal: controller.signal })
+    } catch {
+      throw new Error(controller.signal.aborted ? `${label} fetch timed out` : `${label} fetch failed (network)`)
+    }
+    if (res.status === 428) throw new GoogleHealthNotConnectedError('Google Health not connected')
+    if (res.status === 401) throw new SessionExpiredError('Session expired — please sign in again')
+    if (!res.ok) throw new Error(`${label} fetch failed (${res.status})`)
+    const data = (await res.json().catch(() => null)) as Record<string, unknown> | null
+    const value = data?.[field]
+    if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${label} fetch returned an unexpected response`)
+    return value
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 /** Fetches a day's step total via the server-side /api/google-health-steps proxy.
  *  `date` must be local YYYY-MM-DD (use getToday()) — the server has no notion of the
  *  caller's timezone. Throws GoogleHealthNotConnectedError when no refresh token is
  *  configured server-side yet, so callers can show a "Connect" prompt instead of a
  *  generic error. */
-export async function fetchSteps(date: string): Promise<number> {
-  const res = await fetch(`/api/google-health-steps?date=${date}`, { headers: await apiHeaders() })
-  if (res.status === 428) throw new GoogleHealthNotConnectedError('Google Health not connected')
-  if (!res.ok) throw new Error(`Steps fetch failed (${res.status})`)
-  const data = (await res.json()) as { steps: number }
-  return data.steps
+export function fetchSteps(date: string): Promise<number> {
+  return fetchHealthNumber('/api/google-health-steps', date, 'steps', 'Steps')
 }
 
 /** Fetches the main sleep session ending on `date` (local YYYY-MM-DD) via the
  *  server-side /api/google-health-sleep proxy, in hours. Same connection/error
  *  semantics as fetchSteps. */
-export async function fetchSleepHours(date: string): Promise<number> {
-  const res = await fetch(`/api/google-health-sleep?date=${date}`, { headers: await apiHeaders() })
-  if (res.status === 428) throw new GoogleHealthNotConnectedError('Google Health not connected')
-  if (!res.ok) throw new Error(`Sleep fetch failed (${res.status})`)
-  const data = (await res.json()) as { hours: number }
-  return data.hours
+export function fetchSleepHours(date: string): Promise<number> {
+  return fetchHealthNumber('/api/google-health-sleep', date, 'hours', 'Sleep')
 }
 
 /** Fetches minutes spent today in Fitbit's cardio heart-rate zone via the server-side
  *  /api/google-health-cardio proxy. Same connection/error semantics as fetchSteps. */
-export async function fetchCardioMinutes(date: string): Promise<number> {
-  const res = await fetch(`/api/google-health-cardio?date=${date}`, { headers: await apiHeaders() })
-  if (res.status === 428) throw new GoogleHealthNotConnectedError('Google Health not connected')
-  if (!res.ok) throw new Error(`Cardio fetch failed (${res.status})`)
-  const data = (await res.json()) as { minutes: number }
-  return data.minutes
+export function fetchCardioMinutes(date: string): Promise<number> {
+  return fetchHealthNumber('/api/google-health-cardio', date, 'minutes', 'Cardio')
 }
 
 /** Fetches total calories burned today (BMR + activity) via the server-side
  *  /api/google-health-calories proxy. Same connection/error semantics as fetchSteps. */
-export async function fetchCaloriesBurned(date: string): Promise<number> {
-  const res = await fetch(`/api/google-health-calories?date=${date}`, { headers: await apiHeaders() })
-  if (res.status === 428) throw new GoogleHealthNotConnectedError('Google Health not connected')
-  if (!res.ok) throw new Error(`Calories fetch failed (${res.status})`)
-  const data = (await res.json()) as { kcal: number }
-  return data.kcal
+export function fetchCaloriesBurned(date: string): Promise<number> {
+  return fetchHealthNumber('/api/google-health-calories', date, 'kcal', 'Calories')
 }

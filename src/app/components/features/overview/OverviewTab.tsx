@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { RadarChart, PolarGrid, PolarAngleAxis, Radar, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts'
-import { ChevronLeft, ChevronRight, X, Moon } from 'lucide-react'
-import { LEVEL, CURRENT_MOMENTUM, NEXT_LEVEL_MOMENTUM, TIER_THRESHOLDS, getStreakDays } from '@/constants'
-import type { WorkoutEntry } from '@/types'
+import { ChevronLeft, ChevronRight, X, Moon, Flame } from 'lucide-react'
+import { LEVEL, CURRENT_MOMENTUM, NEXT_LEVEL_MOMENTUM, TIER_THRESHOLDS, getStreakDays, getStreakYearsCompleted, daysUntilNextAnniversary } from '@/constants'
+import type { WorkoutEntry, WorkoutSet } from '@/types'
 import { SUPPLEMENT_MOMENTUM_PER_VITAMIN } from '@/hooks/useNutrition'
 import { useHealthData } from '@/contexts/HealthDataContext'
 import { supabase, getToday } from '@/lib/supabase'
@@ -40,12 +40,14 @@ const MOOD_CONFIG: Record<ChimcharMood, {
     sprite: 'https://img.pokemondb.net/sprites/black-white/anim/normal/chimchar.gif',
     cssClass: 'chimchar-resting',
     label: 'RESTING',
-    labelColor: '#B8997A',
+    labelColor: '#8B5A3E',
     glowBox: '0 0 8px rgba(139, 90, 62, 0.08)',
   },
 }
 
 
+
+const MOOD_WORD: Record<ChimcharMood, string> = { fired_up: 'on fire', happy: 'happy', tired: 'tired', resting: 'resting' }
 
 function getTierName(level: number): string {
   for (const tier of TIER_THRESHOLDS) {
@@ -107,6 +109,8 @@ const EXERCISE_GOALS: Record<string, number> = {
 const AXIS_TICK = { fill: '#A0725A', fontSize: 9, fontFamily: 'Poppins', fontWeight: 700 } as const
 const GRID = { strokeDasharray: '3 3', stroke: 'rgba(160,114,90,0.2)' } as const
 
+const hasOwn = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k)
+
 // Category base scores — reflects how demanding each training type is
 const CAT_BASE: Record<string, number> = {
   'Speed': 90,
@@ -129,7 +133,7 @@ function computeWorkoutScore(workouts: WorkoutEntry[]): number {
   // Highest-intensity category sets the floor
   const nonRest = uniqueCats.filter(c => c !== 'Rest Day')
   const base = nonRest.length > 0
-    ? Math.max(...nonRest.map(c => CAT_BASE[c] ?? 70))
+    ? Math.max(...nonRest.map(c => (hasOwn(CAT_BASE, c) ? CAT_BASE[c] : 70)))
     : 70
 
   // Volume bonus: each exercise after the first adds +1 (max +5)
@@ -145,12 +149,48 @@ function computeWorkoutScore(workouts: WorkoutEntry[]): number {
 }
 
 
+const clamp01 = (x: number) => (Number.isFinite(x) ? Math.min(1, Math.max(0, x)) : 0)
+const pct = (x: number) => Math.round(clamp01(x) * 100)
+/** Finite, non-negative number from an untrusted DB value. */
+const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : 0 }
+
+/** Only arrays of sets with finite numeric reps/weight survive — stored JSON can be any shape. */
+function safeSets(sets: unknown): WorkoutSet[] {
+  if (!Array.isArray(sets)) return []
+  return sets
+    .filter((x): x is { reps: unknown; weight: unknown } => !!x && typeof x === 'object')
+    .map(x => ({ reps: Number(x.reps), weight: Number(x.weight) }))
+    .filter(x => Number.isFinite(x.reps) && Number.isFinite(x.weight))
+}
+
+function normalizeWorkout(raw: unknown): WorkoutEntry | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as Record<string, unknown>
+  if (typeof r.exercise !== 'string') return null
+  const rating = Number(r.energyRating ?? r.energy_rating)
+  return {
+    exercise: r.exercise,
+    category: typeof r.category === 'string' ? r.category : undefined,
+    type: r.type === 'weights' ? 'weights' : 'energy',
+    energyRating: Number.isFinite(rating) && rating > 0 ? rating : undefined,
+    sets: safeSets(r.sets),
+    time: typeof r.time === 'string' ? r.time : '',
+  }
+}
+
 type HistoricalDay = {
   workoutLevel: number; energyWorkout: number
   sleepHours: number; sleepMinutes: number; energyLevel: number
   waterLiters: number; calories: number
   workouts: WorkoutEntry[]
 }
+
+const EMPTY_DAY: HistoricalDay = {
+  workoutLevel: 0, energyWorkout: 0, sleepHours: 0, sleepMinutes: 0, energyLevel: 0,
+  waterLiters: 0, calories: 0, workouts: [],
+}
+
+type HistStatus = 'loading' | 'missing' | 'error' | 'ready'
 
 function offsetDate(base: string, delta: number): string {
   const d = new Date(base + 'T12:00:00')
@@ -171,74 +211,111 @@ export function OverviewTab() {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
   const [selectedExercise, setSelectedExercise] = useState<string | null>(null)
   const [supplementMomentum, setSupplementMomentum] = useState(0)
-  const [viewingDate, setViewingDate] = useState(() => getToday())
+  const [today, setToday] = useState(() => getToday())
+  const [viewingDate, setViewingDate] = useState(today)
   const [histDay, setHistDay] = useState<HistoricalDay | null>(null)
-  const [loadingDay, setLoadingDay] = useState(false)
+  const [histStatus, setHistStatus] = useState<HistStatus>('ready')
+  const [reloadKey, setReloadKey] = useState(0)
+  const todayRef = useRef(today)
+
+  // Follow the calendar if the app is left open past midnight: if the user was on
+  // "today", keep them on the new today instead of silently showing yesterday.
+  useEffect(() => {
+    const check = () => {
+      const t = getToday()
+      if (t === todayRef.current) return
+      const prev = todayRef.current
+      todayRef.current = t
+      setToday(t)
+      setViewingDate(v => (v === prev ? t : v))
+    }
+    const id = setInterval(check, 60_000)
+    document.addEventListener('visibilitychange', check)
+    window.addEventListener('focus', check)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', check)
+      window.removeEventListener('focus', check)
+    }
+  }, [])
 
   const { nutrition: nutritionCtx, workout: workoutCtx, sleep: sleepCtx } = useHealthData()
   const { state: nutrition } = nutritionCtx
   const { todayWorkouts, historicalLogs } = workoutCtx
   const { state: sleep, totalSleepHours } = sleepCtx
 
-  const isToday = viewingDate === getToday()
+  const isToday = viewingDate === today
+  const loadingDay = !isToday && histStatus === 'loading'
 
   useEffect(() => {
-    if (isToday || !user) { setHistDay(null); return }
-    setLoadingDay(true)
+    setHistDay(null)
+    if (isToday || !user) { setHistStatus('ready'); return }
+    let cancelled = false
+    setHistStatus('loading')
     Promise.all([
       supabase
         .from('daily_logs')
         .select('workout_level, energy_level_workout, sleep_hours, sleep_minutes, energy_level, water_liters, calories, today_workouts')
         .eq('user_id', user.id)
         .eq('log_date', viewingDate)
-        .single(),
+        .maybeSingle(),
       supabase
         .from('workout_entries')
         .select('exercise, category, type, energy_rating, sets')
         .eq('user_id', user.id)
         .eq('log_date', viewingDate),
-    ]).then(([{ data }, { data: entries }]) => {
-      if (!data) { setHistDay(null); setLoadingDay(false); return }
+    ]).then(([{ data, error }, { data: entries }]) => {
+      if (cancelled) return
+      if (error) { setHistStatus('error'); return }
+      if (!data) { setHistStatus('missing'); return }
       // prefer workout_entries (has proper categories); fall back to today_workouts JSONB
-      const workouts: WorkoutEntry[] = (entries && entries.length > 0)
-        ? entries.map(e => ({ exercise: e.exercise, category: e.category ?? undefined, type: e.type as 'energy' | 'weights', energyRating: e.energy_rating ?? undefined, sets: e.sets ?? undefined, time: '' }))
+      const rawWorkouts: unknown[] = (entries && entries.length > 0)
+        ? entries
         : (Array.isArray(data.today_workouts) ? data.today_workouts : [])
+      const workouts = rawWorkouts.map(normalizeWorkout).filter((w): w is WorkoutEntry => w !== null)
       setHistDay({
-        workoutLevel: Number(data.workout_level) || 0,
-        energyWorkout: Number(data.energy_level_workout) || 0,
-        sleepHours: Number(data.sleep_hours) || 0,
-        sleepMinutes: Number(data.sleep_minutes) || 0,
-        energyLevel: Number(data.energy_level) || 0,
-        waterLiters: Number(data.water_liters) || 0,
-        calories: Number(data.calories) || 0,
+        workoutLevel: num(data.workout_level),
+        energyWorkout: num(data.energy_level_workout),
+        sleepHours: num(data.sleep_hours),
+        sleepMinutes: num(data.sleep_minutes),
+        energyLevel: num(data.energy_level),
+        waterLiters: num(data.water_liters),
+        calories: num(data.calories),
         workouts,
       })
-      setLoadingDay(false)
+      setHistStatus('ready')
+    }).catch(() => {
+      if (!cancelled) setHistStatus('error')
     })
-  }, [viewingDate, user, isToday])
+    return () => { cancelled = true }
+  }, [viewingDate, user, isToday, reloadKey])
+
+  // Past dates never fall back to today's live values: a missing, failed or
+  // still-loading day shows as empty.
+  const pastDay = isToday ? null : (histDay ?? EMPTY_DAY)
 
   const radarStats = useMemo(() => {
-    if (!isToday && histDay) {
-      const sleepTotal = histDay.sleepHours + histDay.sleepMinutes / 60
+    if (pastDay) {
+      const sleepTotal = pastDay.sleepHours + pastDay.sleepMinutes / 60
       return [
-        { stat: 'FOOD',    value: Math.min(100, Math.round(histDay.calories / 2500 * 100)) },
-        { stat: 'WATER',   value: Math.min(100, Math.round(histDay.waterLiters / 3 * 100)) },
-        { stat: 'SLEEP',   value: Math.min(100, Math.round(sleepTotal / 9 * 100)) },
-        { stat: 'WORKOUT', value: computeWorkoutScore(histDay.workouts) },
-        { stat: 'ENERGY',  value: Math.min(100, Math.round(histDay.energyLevel * 10)) },
+        { stat: 'FOOD',    value: pct(pastDay.calories / 2500) },
+        { stat: 'WATER',   value: pct(pastDay.waterLiters / 3) },
+        { stat: 'SLEEP',   value: pct(sleepTotal / 9) },
+        { stat: 'WORKOUT', value: pct(computeWorkoutScore(pastDay.workouts) / 100) },
+        { stat: 'ENERGY',  value: pct(pastDay.energyLevel / 10) },
       ]
     }
 
     // FOOD, WATER, SLEEP: 0–100% of daily goal — reset each day, go up as you hit targets
-    const foodVal  = Math.min(100, Math.round(nutrition.calories / 2500 * 100))
-    const waterVal = Math.min(100, Math.round(nutrition.waterLiters / 3 * 100))
-    const sleepVal = Math.min(100, Math.round(totalSleepHours / 9 * 100))  // 9 hrs = 100%
+    const foodVal  = pct(nutrition.calories / 2500)
+    const waterVal = pct(nutrition.waterLiters / 3)
+    const sleepVal = pct(totalSleepHours / 9)  // 9 hrs = 100%
 
     // WORKOUT: scored per session — category sets the base, volume + energy rating add bonus
-    const workoutVal = computeWorkoutScore(todayWorkouts)
+    const workoutVal = pct(computeWorkoutScore(todayWorkouts) / 100)
 
     // ENERGY: strictly from the sleep tab 1–10 daily rating (no workout-energy fallback)
-    const energyVal = Math.min(100, Math.round(sleep.energyLevel * 10))
+    const energyVal = pct(sleep.energyLevel / 10)
 
     return [
       { stat: 'FOOD',    value: foodVal },
@@ -247,23 +324,35 @@ export function OverviewTab() {
       { stat: 'WORKOUT', value: workoutVal },
       { stat: 'ENERGY',  value: energyVal },
     ]
-  }, [isToday, histDay, nutrition.calories, nutrition.waterLiters, todayWorkouts, sleep.energyLevel, totalSleepHours])
+  }, [pastDay, nutrition.calories, nutrition.waterLiters, todayWorkouts, sleep.energyLevel, totalSleepHours])
 
   useEffect(() => {
     if (!user) return
-    supabase
-      .from('daily_logs')
-      .select('multivitamins')
-      .eq('user_id', user.id)
-      .then(({ data }) => {
-        const total = data?.reduce((s, r) => s + (r.multivitamins ?? 0), 0) ?? 0
-        setSupplementMomentum(total * SUPPLEMENT_MOMENTUM_PER_VITAMIN)
-      })
+    let cancelled = false
+    // Page through every row: a single select is capped by Supabase's max-rows limit.
+    const PAGE = 1000
+    ;(async () => {
+      let total = 0
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await supabase
+          .from('daily_logs')
+          .select('multivitamins')
+          .eq('user_id', user.id)
+          .order('log_date')
+          .range(from, from + PAGE - 1)
+        // On failure keep the previous value rather than dropping momentum to 0
+        if (error || !data) return
+        total += data.reduce((s, r) => s + num(r.multivitamins), 0)
+        if (data.length < PAGE) break
+      }
+      if (!cancelled) setSupplementMomentum(total * SUPPLEMENT_MOMENTUM_PER_VITAMIN)
+    })().catch(() => {})
+    return () => { cancelled = true }
   }, [user])
 
   // Per-category: count of unique exercises logged in last 14 days
   const categoryStats = useMemo(() => {
-    const stats: Record<string, { logged: Set<string>; lastDate: string | null }> = {}
+    const stats: Record<string, { logged: Set<string>; lastDate: string | null }> = Object.create(null)
     for (const cat of CATEGORIES) {
       stats[cat.name] = { logged: new Set(), lastDate: null }
     }
@@ -272,7 +361,7 @@ export function OverviewTab() {
         // Prefer stored category field; fall back to name matching
         const matchedCatName = w.category
           ?? CATEGORIES.find(c => (c.exercises as readonly string[]).includes(w.exercise))?.name
-        if (matchedCatName && stats[matchedCatName]) {
+        if (typeof matchedCatName === 'string' && hasOwn(stats, matchedCatName)) {
           stats[matchedCatName].logged.add(w.exercise)
           if (!stats[matchedCatName].lastDate || day.date > stats[matchedCatName].lastDate!) {
             stats[matchedCatName].lastDate = day.date
@@ -292,8 +381,8 @@ export function OverviewTab() {
         const ws = d.workouts.filter(w => w.exercise === selectedExercise)
         let maxWeight = 0, totalReps = 0, maxEnergy = 0
         for (const w of ws) {
-          if (w.type === 'weights' && w.sets) {
-            for (const s of w.sets) {
+          if (w.type === 'weights') {
+            for (const s of safeSets(w.sets)) {
               if (s.weight > maxWeight) maxWeight = s.weight
               totalReps += s.reps
             }
@@ -314,40 +403,63 @@ export function OverviewTab() {
   }, [selectedExercise, historicalLogs])
 
   const streakDays = getStreakDays()
-  const streakYearsCompleted = Math.floor(streakDays / 365)
-  const daysToNextYear = 365 - (streakDays % 365)
+  const streakYearsCompleted = getStreakYearsCompleted()
+  const daysToNextYear = daysUntilNextAnniversary()
 
   const mood = useMemo((): ChimcharMood => {
     let w: number, e: number, s: number, h: number, f: number
-    if (!isToday && histDay) {
-      const sleepTotal = histDay.sleepHours + histDay.sleepMinutes / 60
-      w = computeWorkoutScore(histDay.workouts) / 100
-      e = histDay.energyLevel / 10
-      s = Math.min(1, sleepTotal / 9)
-      h = Math.min(1, histDay.waterLiters / 3)
-      f = Math.min(1, histDay.calories / 2500)
+    if (pastDay) {
+      const sleepTotal = pastDay.sleepHours + pastDay.sleepMinutes / 60
+      w = clamp01(computeWorkoutScore(pastDay.workouts) / 100)
+      e = clamp01(pastDay.energyLevel / 10)
+      s = clamp01(sleepTotal / 9)
+      h = clamp01(pastDay.waterLiters / 3)
+      f = clamp01(pastDay.calories / 2500)
     } else {
-      w = computeWorkoutScore(todayWorkouts) / 100
-      e = sleep.energyLevel / 10
-      s = Math.min(1, totalSleepHours / 9)
-      h = Math.min(1, nutrition.waterLiters / 3)
-      f = Math.min(1, nutrition.calories / 2500)
+      w = clamp01(computeWorkoutScore(todayWorkouts) / 100)
+      e = clamp01(sleep.energyLevel / 10)
+      s = clamp01(totalSleepHours / 9)
+      h = clamp01(nutrition.waterLiters / 3)
+      f = clamp01(nutrition.calories / 2500)
     }
     const score = (w + e + s + h + f) / 5
     if (score >= 0.40) return 'fired_up'
     if (score >= 0.22) return 'happy'
     if (score >= 0.12) return 'tired'
     return 'resting'
-  }, [isToday, histDay, todayWorkouts, sleep.energyLevel, totalSleepHours, nutrition.waterLiters, nutrition.calories])
+  }, [pastDay, todayWorkouts, sleep.energyLevel, totalSleepHours, nutrition.waterLiters, nutrition.calories])
+  const avatarKey = hasOwn(AVATAR_SPRITES, settings.avatar) ? settings.avatar : 'chimchar'
   const avatarSprite = mood === 'resting'
     ? 'https://img.pokemondb.net/sprites/black-white/anim/normal/magikarp.gif'
-    : (AVATAR_SPRITES[settings.avatar] ?? AVATAR_SPRITES['chimchar'])
+    : AVATAR_SPRITES[avatarKey]
+  const companionName = mood === 'resting' ? 'Magikarp' : avatarKey.charAt(0).toUpperCase() + avatarKey.slice(1)
   const moodCfg = { ...MOOD_CONFIG[mood], sprite: avatarSprite }
+  const [failedSprite, setFailedSprite] = useState<string | null>(null)
+  const spriteFailed = failedSprite === moodCfg.sprite
   const totalMomentum = CURRENT_MOMENTUM + supplementMomentum
-  const progressPercentage = Math.min(100, (totalMomentum / NEXT_LEVEL_MOMENTUM) * 100)
+  const progressPercentage = Math.min(100, Math.max(0, Number.isFinite(totalMomentum) ? (totalMomentum / NEXT_LEVEL_MOMENTUM) * 100 : 0))
   const tierName = getTierName(LEVEL)
 
   const selectedCategoryData = CATEGORIES.find(c => c.name === selectedCategory)
+
+  // Modal keyboard support: Escape closes the top-most dialog, and focus returns to
+  // the category card that opened it. (Each dialog autofocuses its first button.)
+  const categoryTriggerRef = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    if (!selectedCategory && !selectedExercise) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (selectedExercise) setSelectedExercise(null)
+      else setSelectedCategory(null)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [selectedCategory, selectedExercise])
+  const prevCategory = useRef(selectedCategory)
+  useEffect(() => {
+    if (prevCategory.current && !selectedCategory) categoryTriggerRef.current?.focus()
+    prevCategory.current = selectedCategory
+  }, [selectedCategory])
 
   return (
     <div className="p-6 max-w-md mx-auto">
@@ -361,19 +473,38 @@ export function OverviewTab() {
       {/* Date nav */}
       <div className="monument-card flex items-center justify-between px-4 py-2 mb-6">
         <button
+          type="button"
+          aria-label="Previous day"
           onClick={() => setViewingDate(d => offsetDate(d, -1))}
-          className="monument-button p-1.5"
+          className="monument-button min-w-10 min-h-10 flex items-center justify-center"
           style={{ background: 'linear-gradient(135deg,#FF9F66,#FFB88A)', borderRadius: '8px', border: '2px solid #8B5A3E', boxShadow: '0 3px 0 rgba(139,90,62,0.25)' }}
         >
           <ChevronLeft size={16} strokeWidth={2.5} color="#6B4423" />
         </button>
-        <div className="monument-text text-center" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>
-          {loadingDay ? '...' : formatDateLabel(viewingDate)}
+        <div className="text-center" aria-live="polite">
+          <div className="monument-text" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>
+            {loadingDay ? '...' : formatDateLabel(viewingDate)}
+          </div>
+          {!isToday && histStatus === 'missing' && (
+            <div className="monument-text" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>No log for this day</div>
+          )}
+          {!isToday && histStatus === 'error' && (
+            <button
+              type="button"
+              onClick={() => setReloadKey(k => k + 1)}
+              className="monument-text underline"
+              style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', background: 'none', border: 'none', cursor: 'pointer' }}
+            >
+              Couldn't load this day — tap to retry
+            </button>
+          )}
         </div>
         <button
+          type="button"
+          aria-label="Next day"
           onClick={() => setViewingDate(d => { const next = offsetDate(d, 1); return next > getToday() ? d : next })}
           disabled={isToday}
-          className="monument-button p-1.5"
+          className="monument-button min-w-10 min-h-10 flex items-center justify-center"
           style={{ background: isToday ? 'rgba(255,252,248,0.5)' : 'linear-gradient(135deg,#FF9F66,#FFB88A)', borderRadius: '8px', border: '2px solid #8B5A3E', boxShadow: '0 3px 0 rgba(139,90,62,0.25)', opacity: isToday ? 0.4 : 1 }}
         >
           <ChevronRight size={16} strokeWidth={2.5} color="#6B4423" />
@@ -382,13 +513,13 @@ export function OverviewTab() {
 
       {/* Level + Streak Row */}
       <div className="flex gap-4 mb-8">
-        <div className="monument-card p-5 flex-1">
-          <div className="flex justify-between items-center mb-3">
-            <div className="monument-text" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>
+        <div className="monument-card p-5 flex-1 min-w-0">
+          <div className="flex flex-wrap justify-between items-baseline gap-x-2 gap-y-0.5 mb-3 min-w-0">
+            <div className="monument-text whitespace-nowrap" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>
               Level {LEVEL} — {tierName}
             </div>
-            <div className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>
-              {totalMomentum} / {NEXT_LEVEL_MOMENTUM}
+            <div className="monument-text shrink-0" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>
+              {Math.round(totalMomentum).toLocaleString()} / {NEXT_LEVEL_MOMENTUM.toLocaleString()}
             </div>
           </div>
           <div className="w-full h-2 relative overflow-hidden" style={{ background: 'rgba(255, 159, 102, 0.15)', borderRadius: '10px', border: '2px solid #8B5A3E' }}>
@@ -399,16 +530,16 @@ export function OverviewTab() {
           </div>
         </div>
 
-        <div className="monument-card p-4 text-center">
-          <div className="monument-text mb-1" style={{ color: '#A0725A', fontSize: '8px', fontWeight: '700', letterSpacing: '1px' }}>STREAK</div>
+        <div className="monument-card p-3 text-center flex-shrink-0">
+          <div className="monument-text mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700', letterSpacing: '1px' }}>STREAK</div>
           <div className="monument-text" style={{ color: '#FF9F66', fontSize: '22px', fontWeight: '800', lineHeight: 1, textShadow: '0 2px 8px rgba(255, 184, 138, 0.3)' }}>
             {streakDays}
           </div>
-          <div className="monument-text mb-3" style={{ color: '#A0725A', fontSize: '8px', fontWeight: '700', letterSpacing: '1px' }}>DAYS</div>
+          <div className="monument-text mb-3" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700', letterSpacing: '1px' }}>DAYS</div>
           <div style={{ height: '1px', background: 'rgba(139, 90, 62, 0.15)', marginBottom: '10px' }} />
           <div className="monument-text" style={{ color: '#6B4423', fontSize: '18px', fontWeight: '800', lineHeight: 1 }}>{daysToNextYear}</div>
-          <div className="monument-text mt-1" style={{ color: '#A0725A', fontSize: '7px', fontWeight: '700', letterSpacing: '0.8px' }}>DAYS TO</div>
-          <div className="monument-text" style={{ color: '#A0725A', fontSize: '7px', fontWeight: '700', letterSpacing: '0.8px' }}>YEAR {streakYearsCompleted + 1}</div>
+          <div className="monument-text mt-1 whitespace-nowrap" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px' }}>DAYS TO</div>
+          <div className="monument-text whitespace-nowrap" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px' }}>YEAR {streakYearsCompleted + 1}</div>
         </div>
       </div>
 
@@ -425,12 +556,19 @@ export function OverviewTab() {
               transition: 'box-shadow 0.8s ease',
             }}
           >
-            <img
-              src={moodCfg.sprite}
-              alt={`Chimchar — ${mood}`}
-              className={moodCfg.cssClass}
-              style={{ width: '96px', height: '96px', imageRendering: 'pixelated' }}
-            />
+            {spriteFailed ? (
+              <div role="img" aria-label={`${companionName}, ${MOOD_WORD[mood]}`} className={moodCfg.cssClass}>
+                <Flame size={64} strokeWidth={2} color="#6B4423" />
+              </div>
+            ) : (
+              <img
+                src={moodCfg.sprite}
+                alt={`${companionName}, ${MOOD_WORD[mood]}`}
+                className={moodCfg.cssClass}
+                onError={() => setFailedSprite(moodCfg.sprite)}
+                style={{ width: '96px', height: '96px', imageRendering: 'pixelated' }}
+              />
+            )}
           </div>
           <div
             className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 monument-text px-4 py-2"
@@ -454,6 +592,7 @@ export function OverviewTab() {
       {/* Radar Stats */}
       <div className="monument-card p-5 mb-6">
         <div className="monument-text text-center mb-4" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>Stats</div>
+        <div role="img" aria-label={`Stats: ${radarStats.map(r => `${r.stat.charAt(0) + r.stat.slice(1).toLowerCase()} ${r.value}%`).join(', ')}`}>
         <ResponsiveContainer width="100%" height={260}>
           <RadarChart data={radarStats} outerRadius="65%" margin={{ top: 10, right: 28, bottom: 10, left: 28 }}>
             <PolarGrid stroke="rgba(160, 114, 90, 0.2)" strokeWidth={1} />
@@ -464,6 +603,7 @@ export function OverviewTab() {
             <Radar dataKey="value" stroke="#FF9F66" fill="#FF9F66" fillOpacity={0.4} strokeWidth={2} />
           </RadarChart>
         </ResponsiveContainer>
+        </div>
       </div>
 
       {/* Exercise Progress — Category Grid */}
@@ -479,7 +619,7 @@ export function OverviewTab() {
             return (
               <button
                 key={cat.name}
-                onClick={() => setSelectedCategory(cat.name)}
+                onClick={e => { categoryTriggerRef.current = e.currentTarget; setSelectedCategory(cat.name) }}
                 className="monument-button p-4 flex flex-col gap-1.5 text-left"
                 style={{
                   background: cat.gradient,
@@ -491,7 +631,7 @@ export function OverviewTab() {
                 <span className="monument-text" style={{ color: '#fff', fontSize: '12px', fontWeight: '700', textShadow: '0 1px 3px rgba(0,0,0,0.2)' }}>
                   {cat.name}
                 </span>
-                <span style={{ color: 'rgba(255,255,255,0.85)', fontSize: '9px', fontWeight: '700', fontFamily: 'Poppins' }}>
+                <span style={{ color: 'rgba(255,255,255,0.92)', fontSize: '10px', fontWeight: '700', fontFamily: 'Poppins' }}>
                   {isRestDay
                     ? (count > 0 ? `${count} rest day${count > 1 ? 's' : ''} taken` : 'No rest days logged')
                     : (count > 0 ? `${count} exercise${count > 1 ? 's' : ''} logged` : 'No data yet')}
@@ -514,20 +654,30 @@ export function OverviewTab() {
           style={{ background: 'rgba(107,68,35,0.7)', backdropFilter: 'blur(8px)' }}
           onClick={() => setSelectedCategory(null)}
         >
-          <div className="monument-card p-5 max-w-md w-full max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="category-dialog-title"
+            className="monument-card p-5 max-w-md w-full max-h-[85vh] flex flex-col"
+            onClick={e => e.stopPropagation()}
+          >
             {/* Header */}
             <div className="flex items-center justify-between mb-4 flex-shrink-0">
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full" style={{ background: selectedCategoryData.color }} />
-                <span className="monument-text" style={{ color: '#6B4423', fontSize: '14px', fontWeight: '700' }}>
+                <span id="category-dialog-title" className="monument-text" style={{ color: '#6B4423', fontSize: '14px', fontWeight: '700' }}>
                   {selectedCategory}
                 </span>
               </div>
               <button
+                type="button"
+                aria-label="Close"
+                autoFocus
                 onClick={() => setSelectedCategory(null)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}
+                className="min-w-10 min-h-10 flex items-center justify-center"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', marginRight: '-11px' }}
               >
-                <X size={18} strokeWidth={2.5} color="#A0725A" />
+                <X size={18} strokeWidth={2.5} color="#8B5A3E" />
               </button>
             </div>
 
@@ -577,7 +727,7 @@ export function OverviewTab() {
                 let bestPerf = ''
                 if (lastSession) {
                   const ws = lastSession.workouts.filter(w => w.exercise === exercise)
-                  const maxW = Math.max(...ws.flatMap(w => (w.sets ?? []).map(s => s.weight)).filter(Boolean))
+                  const maxW = Math.max(...ws.flatMap(w => safeSets(w.sets).map(s => s.weight)).filter(Boolean))
                   const maxE = Math.max(...ws.map(w => w.energyRating ?? 0))
                   if (maxW > 0) bestPerf = `${maxW} kg`
                   else if (maxE > 0) bestPerf = `E:${maxE}/5`
@@ -630,6 +780,9 @@ export function OverviewTab() {
             onClick={() => setSelectedExercise(null)}
           >
             <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="exercise-dialog-title"
               className="monument-card w-full max-w-md max-h-[90vh] flex flex-col overflow-hidden"
               style={{ padding: '20px' }}
               onClick={e => e.stopPropagation()}
@@ -637,18 +790,27 @@ export function OverviewTab() {
               {/* Header */}
               <div className="flex items-center gap-2 mb-4 flex-shrink-0">
                 <button
+                  type="button"
+                  aria-label={selectedCategory ? `Back to ${selectedCategory}` : 'Back'}
+                  autoFocus
                   onClick={() => setSelectedExercise(null)}
-                  className="monument-button p-1.5"
+                  className="monument-button min-w-10 min-h-10 flex items-center justify-center"
                   style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '8px', border: `2px solid ${accentBorder}`, boxShadow: `0 2px 0 ${catData?.shadow ?? 'rgba(139,90,62,0.2)'}` }}
                 >
-                  <span style={{ color: accentBorder, fontSize: '14px', fontWeight: '700', lineHeight: 1 }}>‹</span>
+                  <span aria-hidden="true" style={{ color: accentBorder, fontSize: '18px', fontWeight: '700', lineHeight: 1 }}>‹</span>
                 </button>
                 <div className="flex-1 min-w-0">
-                  <div className="monument-text" style={{ color: '#6B4423', fontSize: '14px', fontWeight: '700', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{selectedExercise}</div>
+                  <div id="exercise-dialog-title" className="monument-text" style={{ color: '#6B4423', fontSize: '14px', fontWeight: '700', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{selectedExercise}</div>
                   {catData && <div style={{ color: accentColor, fontSize: '9px', fontWeight: '700', fontFamily: 'Poppins' }}>{catData.name}</div>}
                 </div>
-                <button onClick={() => setSelectedExercise(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}>
-                  <X size={16} strokeWidth={2.5} color="#A0725A" />
+                <button
+                  type="button"
+                  aria-label="Close"
+                  onClick={() => setSelectedExercise(null)}
+                  className="min-w-10 min-h-10 flex items-center justify-center"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', marginRight: '-11px' }}
+                >
+                  <X size={18} strokeWidth={2.5} color="#8B5A3E" />
                 </button>
               </div>
 
@@ -723,9 +885,9 @@ export function OverviewTab() {
                           </div>
                           {s.workouts.map((w, wi) => (
                             <div key={wi}>
-                              {w.type === 'weights' && w.sets && (
+                              {w.type === 'weights' && safeSets(w.sets).length > 0 && (
                                 <div className="flex flex-wrap gap-1 mt-1">
-                                  {w.sets.map((set, si) => (
+                                  {safeSets(w.sets).map((set, si) => (
                                     <span key={si} style={{ background: `${accentColor}18`, border: `1px solid ${accentColor}40`, borderRadius: '6px', padding: '1px 6px', color: '#8B5A3E', fontSize: '9px', fontWeight: '700', fontFamily: 'Poppins' }}>
                                       {set.reps}r × {set.weight}kg
                                     </span>

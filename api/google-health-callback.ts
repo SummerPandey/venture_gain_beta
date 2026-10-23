@@ -8,6 +8,8 @@
 // Google Cloud Console, so re-running the "Connect" flow is a recurring maintenance step,
 // not a one-time setup.
 
+import { fetchWithTimeout, readJson } from './_http.js'
+
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 
 // Hosts allowed as the OAuth redirect target. Never trust the raw Host header:
@@ -33,13 +35,20 @@ function escapeHtml(value: string): string {
 function readCookie(header: string | undefined, name: string): string | undefined {
   for (const part of (header ?? '').split(';')) {
     const [k, ...v] = part.trim().split('=')
-    if (k === name) return decodeURIComponent(v.join('='))
+    if (k !== name) continue
+    // A hand-edited or tampered cookie must fall through to the normal "invalid request"
+    // page, not throw a URIError and a bare 500.
+    try { return decodeURIComponent(v.join('=')) } catch { return undefined }
   }
   return undefined
 }
 
+// A full document (charset + viewport) so phones lay it out at device width and the em
+// dashes/apostrophes don't garble. Relative link back: works without trusting Host.
 function page(body: string): string {
-  return `<body style="font-family: -apple-system, sans-serif; max-width: 560px; margin: 48px auto; padding: 0 16px; color: #333;">${body}</body>`
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>VentureGain: Google Health</title></head>` +
+    `<body style="font-family: -apple-system, sans-serif; max-width: 560px; margin: 48px auto; padding: 0 16px; color: #6B4423; background: #F5E6D3; line-height: 1.5;">${body}` +
+    `<p style="margin-top: 32px;"><a href="/" style="color: #8B5A3E; font-weight: 600;">Back to VentureGain</a></p></body></html>`
 }
 
 export default async function handler(req: Req, res: Res) {
@@ -52,7 +61,7 @@ export default async function handler(req: Req, res: Res) {
 
   const error = req.query?.error
   if (error) {
-    res.status(400).setHeader('Content-Type', 'text/html').end(page(`<h2>Connection cancelled</h2><p>Google returned: ${escapeHtml(String(error))}</p>`))
+    res.status(400).setHeader('Content-Type', 'text/html; charset=utf-8').end(page(`<h2>Connection cancelled</h2><p>Google returned: ${escapeHtml(String(error))}</p>`))
     return
   }
 
@@ -61,33 +70,33 @@ export default async function handler(req: Req, res: Res) {
   const state = req.query?.state
   const expectedState = readCookie(req.headers.cookie, STATE_COOKIE)
   if (typeof state !== 'string' || !expectedState || state !== expectedState) {
-    res.status(400).setHeader('Content-Type', 'text/html').end(page('<h2>Invalid or expired request</h2><p>Start the Connect flow again from the app.</p>'))
+    res.status(400).setHeader('Content-Type', 'text/html; charset=utf-8').end(page('<h2>Invalid or expired request</h2><p>Start the Connect flow again from the app.</p>'))
     return
   }
 
   const code = req.query?.code
   if (typeof code !== 'string') {
-    res.status(400).setHeader('Content-Type', 'text/html').end(page('<h2>Missing authorization code</h2>'))
+    res.status(400).setHeader('Content-Type', 'text/html; charset=utf-8').end(page('<h2>Missing authorization code</h2>'))
     return
   }
 
   const clientId = process.env.GOOGLE_HEALTH_CLIENT_ID
   const clientSecret = process.env.GOOGLE_HEALTH_CLIENT_SECRET
   if (!clientId || !clientSecret) {
-    res.status(500).setHeader('Content-Type', 'text/html').end(page('<h2>Not configured</h2><p>GOOGLE_HEALTH_CLIENT_ID / GOOGLE_HEALTH_CLIENT_SECRET are missing on the server.</p>'))
+    res.status(500).setHeader('Content-Type', 'text/html; charset=utf-8').end(page('<h2>Not configured</h2><p>GOOGLE_HEALTH_CLIENT_ID / GOOGLE_HEALTH_CLIENT_SECRET are missing on the server.</p>'))
     return
   }
 
   const host = req.headers.host ?? ''
   if (!ALLOWED_HOSTS.has(host)) {
-    res.status(400).setHeader('Content-Type', 'text/html').end(page('<h2>Unknown host</h2>'))
+    res.status(400).setHeader('Content-Type', 'text/html; charset=utf-8').end(page('<h2>Unknown host</h2>'))
     return
   }
   const protocol = host.startsWith('localhost') ? 'http' : 'https'
   const redirectUri = `${protocol}://${host}/api/google-health-callback`
 
   try {
-    const tokenRes = await fetch(TOKEN_URL, {
+    const tokenRes = await fetchWithTimeout(TOKEN_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -97,22 +106,28 @@ export default async function handler(req: Req, res: Res) {
         redirect_uri: redirectUri,
         grant_type: 'authorization_code',
       }),
-    })
-    const data = await tokenRes.json()
-    if (!tokenRes.ok || !data.refresh_token) {
-      res.status(502).setHeader('Content-Type', 'text/html').end(page(`<h2>Token exchange failed</h2><pre style="white-space:pre-wrap;">${escapeHtml(JSON.stringify(data, null, 2))}</pre>`))
+    }, 10_000)
+    const { data } = await readJson(tokenRes)
+    if (!tokenRes.ok || !data?.refresh_token) {
+      // Never echo the whole response: a 200 without refresh_token still carries an access_token.
+      const reason = data?.error === 'invalid_grant'
+        ? '<p>This link was already used or has expired. If you just connected, you are done; otherwise start Connect again from the app.</p>'
+        : data?.refresh_token === undefined && tokenRes.ok
+          ? '<p>Google did not return a refresh token. Start Connect again from the app.</p>'
+          : `<pre style="white-space:pre-wrap; word-break:break-all; overflow-wrap:anywhere; font-size:13px;">${escapeHtml(String(data?.error ?? `HTTP ${tokenRes.status}`))}${data?.error_description ? `: ${escapeHtml(String(data.error_description))}` : ''}</pre>`
+      res.status(502).setHeader('Content-Type', 'text/html; charset=utf-8').end(page(`<h2>Token exchange failed</h2>${reason}`))
       return
     }
 
     const expiresDays = data.refresh_token_expires_in ? Math.round(data.refresh_token_expires_in / 86400) : null
 
-    res.status(200).setHeader('Content-Type', 'text/html').end(page(`
+    res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8').end(page(`
       <h2>Connected</h2>
       <p>Copy this into <code>GOOGLE_HEALTH_REFRESH_TOKEN</code> — in <code>.env.local</code> for local dev, and in Vercel's project env vars for production (then redeploy):</p>
-      <pre style="background:#f4f4f4; padding:12px; border-radius:8px; word-break:break-all; white-space:pre-wrap;">${escapeHtml(String(data.refresh_token))}</pre>
-      <p style="color:#888; font-size:13px;">This token is shown once and isn't stored anywhere by this app — copy it now.${expiresDays ? ` It expires in ~${expiresDays} day(s) while this Google Cloud OAuth app is in "Testing" mode — re-run the Connect flow when steps stop updating.` : ''}</p>
+      <pre style="background:#fff; padding:12px; border-radius:8px; word-break:break-all; white-space:pre-wrap; user-select:all; -webkit-user-select:all;">${escapeHtml(String(data.refresh_token))}</pre>
+      <p style="color:#8B5A3E; font-size:14px;">This token is shown once and isn't stored anywhere by this app — copy it now. While this Google Cloud OAuth app is in "Testing" mode it expires${expiresDays ? ` in ~${expiresDays} day(s)` : ' after about 7 days'} — re-run the Connect flow when steps stop updating.</p>
     `))
   } catch {
-    res.status(502).setHeader('Content-Type', 'text/html').end(page('<h2>Request to Google failed</h2>'))
+    res.status(502).setHeader('Content-Type', 'text/html; charset=utf-8').end(page('<h2>Request to Google failed</h2>'))
   }
 }

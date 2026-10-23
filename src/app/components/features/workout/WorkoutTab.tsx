@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react'
+import React, { useState, useMemo, useRef, useEffect } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, LineChart, Line } from 'recharts'
 import { Dumbbell, TrendingUp, Target, Award, Activity, ChevronUp, Zap, Plus, Minus, X, Camera, Mic, FolderOpen, Check, MessageCircle, Send, Moon } from 'lucide-react'
 import { PixelBar } from '@/app/components/shared'
@@ -8,30 +8,45 @@ import { geminiVision } from '@/lib/gemini'
 import { healthSnapshot } from '@/store/healthSnapshot'
 import type { DayLog } from '@/hooks/useWorkout'
 import { CARDIO_MAX_MINUTES, STEPS_GOAL, FITBIT_CARDIO_GOAL_MINUTES } from '@/constants'
-import { TRAINING_CATEGORIES } from '@/constants/trainingCategories'
-import type { ExerciseProgress, WorkoutSet, WorkoutEntry, WeightUnit } from '@/types'
+import { TRAINING_CATEGORIES, REST_DAY_CATEGORY } from '@/constants/trainingCategories'
+import type { ExerciseProgress, WorkoutSet, WorkoutEntry } from '@/types'
 import { toggleKgLbs, unitLabel, toKgValue, toggleSetsUnit } from '@/lib/units'
 import { useArithmeticField } from '@/hooks/useArithmeticField'
-
-interface WorkoutScan {
-  exercise: string
-  type: 'weights' | 'energy'
-  sets: WorkoutSet[]
-  energyRating: number
-  unit: WeightUnit
-}
+import {
+  type WorkoutScan, DEFAULT_WORKOUT_SCAN, MAX_COACH_INPUT, MAX_EXERCISE_NAME,
+  parseScanItems, normalizeScanItem, scanToEntry, isLoggableScan, describeScan,
+  trimHistory, micErrorMessage, compressImage, isDistanceUnit, entryVolumeKg, fmtWeight, cleanExerciseName,
+} from './workoutScan'
 
 interface CoachMessage {
   text: string
   isUser: boolean
   workouts?: WorkoutScan[] | null
 }
-const DEFAULT_WORKOUT_SCAN: WorkoutScan = {
-  exercise: '',
-  type: 'weights',
-  sets: [{ reps: 0, weight: 0 }],
-  energyRating: 3,
-  unit: 'kg',
+
+/** Category for a logged entry: its stored category first, only then a name match
+ *  (exercises like Bench Press appear in both Push and Upper). */
+const categoryFor = (w: { category?: string; exercise: string }) =>
+  TRAINING_CATEGORIES.find(c => c.name === w.category)
+  ?? (w.category === REST_DAY_CATEGORY.name ? undefined : TRAINING_CATEGORIES.find(c => (c.exercises as readonly string[]).includes(w.exercise)))
+
+const ICON_BTN: React.CSSProperties = { background: 'none', border: 'none', cursor: 'pointer', width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
+const disabledStyle = (disabled: boolean): React.CSSProperties => (disabled ? { opacity: 0.45, pointerEvents: 'none' } : {})
+
+/** Escape closes a dialog while it's open. */
+function useEscape(active: boolean, onEscape: () => void) {
+  const cb = useRef(onEscape)
+  cb.current = onEscape
+  useEffect(() => {
+    if (!active) return
+    const onKey = (e: KeyboardEvent) => {
+      // Escape inside a text box cancels that field's edit, not the whole dialog
+      if (e.key !== 'Escape' || e.defaultPrevented || (e.target as HTMLElement | null)?.tagName === 'INPUT') return
+      cb.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [active])
 }
 
 const VOICE_WORKOUT_PROMPT = (transcript: string) => `The user gave this voice transcript while logging a workout: "${transcript}". Extract EVERY exercise mentioned — don't drop any reps or weights they said. Return ONLY a valid JSON array (no markdown, no explanation):
@@ -57,10 +72,9 @@ const EXERCISE_GOALS: Pick<ExerciseProgress, 'exercise' | 'goal' | 'icon' | 'uni
 
 function dayVolume(workouts: DayLog['workouts']): number {
   return workouts.reduce((sum, w) => {
-    if (w.type === 'weights' && w.sets) {
-      return sum + w.sets.reduce((s, set) => s + set.reps * toKgValue(set.weight, w.unit), 0)
-    }
-    return sum + (w.energyRating ?? 0) * 15
+    if (w.type === 'weights') return sum + entryVolumeKg(w, toKgValue) // distance (m/km) entries count 0
+    const rating = Number(w.energyRating)
+    return sum + (Number.isFinite(rating) ? Math.min(5, Math.max(0, rating)) : 0) * 15
   }, 0)
 }
 
@@ -83,9 +97,10 @@ export function WorkoutTab({ onEnterWorkoutMode }: { onEnterWorkoutMode?: () => 
     historicalLogs,
     celebration,
     isDirty, save: saveWorkout,
+    saveError, clearSaveError,
     simulateScreenshot, dismissScreenshot,
-    addSet, updateSet,
-    logWorkout, logRestDay, logWorkoutDirect, adjustCardio, adjustWorkoutLevel,
+    addSet, removeSet, updateSet, discardExercise,
+    logWorkout, logRestDay, restDayLogged, logWorkoutDirect, logWorkoutBatch, adjustCardio, adjustWorkoutLevel,
     removeWorkout, updateWorkoutEntryAndSave,
     scheduledTime, setScheduledTime,
     scheduledCategories, toggleScheduledCategory,
@@ -121,23 +136,49 @@ export function WorkoutTab({ onEnterWorkoutMode }: { onEnterWorkoutMode?: () => 
   // Edit state for today's logged workouts
   const [editingWorkoutIdx, setEditingWorkoutIdx] = useState<number | null>(null)
   const [editingWorkoutData, setEditingWorkoutData] = useState<WorkoutScan | null>(null)
+  const editOriginalRef = useRef<string>('')
+  const [editSaving, setEditSaving] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
 
   const openWorkoutEdit = (idx: number) => {
     const w = todayWorkouts[idx]
-    setEditingWorkoutData({
+    const data: WorkoutScan = {
       exercise: w.exercise,
       type: w.type === 'energy' ? 'energy' : 'weights',
       sets: w.sets && w.sets.length > 0 ? w.sets : [{ reps: 0, weight: 0 }],
       energyRating: w.energyRating ?? 3,
       unit: w.unit ?? 'kg',
-    })
+    }
+    editOriginalRef.current = JSON.stringify(data)
+    setEditingWorkoutData(data)
+    setEditError(null)
     setEditingWorkoutIdx(idx)
   }
+
+  const confirmRemoveWorkout = (i: number) => {
+    const name = todayWorkouts[i]?.exercise ?? 'this exercise'
+    if (window.confirm(`Remove ${name} from today?`)) removeWorkout(i)
+  }
+
+  // Short status toast (mic errors, AI scan problems); hook save errors show in the same slot.
+  const [notice, setNotice] = useState<string | null>(null)
+  useEffect(() => {
+    if (!notice) return
+    const t = setTimeout(() => setNotice(null), 4000)
+    return () => clearTimeout(t)
+  }, [notice])
 
   const [scanEditingIndex, setScanEditingIndex] = useState<number | null>(null)
   const [scanValues, setScanValues] = useState<WorkoutScan[]>([DEFAULT_WORKOUT_SCAN])
   const [scanDescription, setScanDescription] = useState<string | null>(null)
   const [scanLoading, setScanLoading] = useState(false)
+  const [savingScan, setSavingScan] = useState(false)
+  const savingScanRef = useRef(false)
+  // Each scan (photo / voice / text) gets an id; only the latest may write results.
+  const scanReqRef = useRef(0)
+  const textSubmittingRef = useRef(false)
+  const scanValuesRef = useRef(scanValues)
+  scanValuesRef.current = scanValues
   const [micReady, setMicReady] = useState(false)
   const [micRecording, setMicRecording] = useState(false)
   const [textMode, setTextMode] = useState(false)
@@ -152,6 +193,9 @@ export function WorkoutTab({ onEnterWorkoutMode }: { onEnterWorkoutMode?: () => 
   const [coachThinking, setCoachThinking] = useState(false)
   const coachHistoryRef = useRef<{ role: string; content: string }[]>([])
   const coachEndRef = useRef<HTMLDivElement>(null)
+  const coachSendingRef = useRef(false)
+  const [loggedCoachCards, setLoggedCoachCards] = useState<Set<string>>(new Set())
+  const loggingCoachRef = useRef<Set<string>>(new Set())
   const [showPlan, setShowPlan] = useState(false)
   const [showMediaMenu, setShowMediaMenu] = useState(false)
   const [selectedWorkoutCategory, setSelectedWorkoutCategory] = useState<string | null>(null)
@@ -161,18 +205,29 @@ export function WorkoutTab({ onEnterWorkoutMode }: { onEnterWorkoutMode?: () => 
   const [aiPerf, setAiPerf] = useState<{ verdict: string; score: number; bonus: number } | null>(null)
   const [aiPerfLoading, setAiPerfLoading] = useState(false)
   const aiPerfTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const aiPerfReqRef = useRef(0)
+  useEffect(() => () => { if (aiPerfTimerRef.current) clearTimeout(aiPerfTimerRef.current) }, [])
+  /** Shows a verdict for 4s; a newer score request replaces it rather than being hidden by the old timer. */
+  const showAiPerf = (reqId: number, perf: { verdict: string; score: number; bonus: number }) => {
+    if (reqId !== aiPerfReqRef.current) return
+    setAiPerf(perf)
+    if (aiPerfTimerRef.current) clearTimeout(aiPerfTimerRef.current)
+    aiPerfTimerRef.current = setTimeout(() => setAiPerf(null), 4000)
+  }
   const handleLogWithAIScore = async (category?: string) => {
     if (!selectedExercise) return
     // Capture before logWorkout clears state
     const exerciseName = selectedExercise
-    const capturedSets = trackingMode === 'weights' ? sets.map(s => ({ ...s })) : null
+    const capturedSets = trackingMode === 'weights' ? sets.filter(s => s.reps > 0 || s.weight > 0).map(s => ({ ...s })) : null
     const capturedUnit = trackingMode === 'weights' ? unit : 'kg'
     const capturedEnergy = trackingMode === 'energy' ? energyRating : null
 
-    logWorkout(category)   // fast, instant — clears selectedExercise etc.
+    if (!logWorkout(category)) return   // fast, instant — clears selectedExercise etc.
 
-    setAiPerfLoading(true)
+    const reqId = ++aiPerfReqRef.current
     if (aiPerfTimerRef.current) clearTimeout(aiPerfTimerRef.current)
+    setAiPerf(null)
+    setAiPerfLoading(true)
 
     try {
       // Build history string for this exercise (last 3 sessions)
@@ -218,29 +273,32 @@ Rules:
         'You are a terse sports performance analyst. Return ONLY the JSON object asked for.'
       )
 
-      const parsed = parseAIJson<{ bonus?: number; verdict?: string; score?: number }>(raw) ?? {}
+      const parsed = parseAIJson<{ bonus?: number; verdict?: unknown; score?: number }>(raw)
+      // An empty/unparseable reply is a failure — don't present made-up defaults as an AI verdict
+      if (!parsed || typeof parsed !== 'object' || !Number.isFinite(Number(parsed.score))) throw new Error('No score in AI reply')
       const bonus = Math.min(10, Math.max(0, Number(parsed.bonus) || 0))
-      const verdict = isPR ? 'NEW PR 🔥' : (parsed.verdict ?? 'Good Work')
-      const score = isPR ? 5 : Math.min(5, Math.max(1, Number(parsed.score) || 3))
+      const verdict = isPR ? 'NEW PR 🔥' : (typeof parsed.verdict === 'string' && parsed.verdict.trim() ? parsed.verdict.slice(0, 30) : 'Good Work')
+      const score = isPR ? 5 : Math.min(5, Math.max(1, Math.round(Number(parsed.score))))
 
-      setAiPerf({ verdict, score, bonus })
+      if (reqId !== aiPerfReqRef.current) return
+      showAiPerf(reqId, { verdict, score, bonus })
       if (bonus > 0) adjustWorkoutLevel(bonus)
-
-      aiPerfTimerRef.current = setTimeout(() => setAiPerf(null), 4000)
     } catch {
+      if (reqId !== aiPerfReqRef.current) return
       // Still show PR if we detected one without AI
       const exerciseHistory = historicalLogs.flatMap(d => d.workouts.filter(w => w.exercise === exerciseName))
       if (capturedSets?.length && exerciseHistory.length > 0) {
         const todayMax = Math.max(...capturedSets.map(s => toKgValue(s.weight, capturedUnit)))
         const histMax = Math.max(...exerciseHistory.flatMap(w => (w.sets ?? []).map(s => toKgValue(s.weight, w.unit))), 0)
         if (todayMax > histMax && histMax > 0) {
-          setAiPerf({ verdict: 'NEW PR 🔥', score: 5, bonus: 10 })
+          showAiPerf(reqId, { verdict: 'NEW PR 🔥', score: 5, bonus: 10 })
           adjustWorkoutLevel(10)
-          aiPerfTimerRef.current = setTimeout(() => setAiPerf(null), 4000)
+          return
         }
       }
+      showAiPerf(reqId, { verdict: 'Logged · score unavailable', score: 0, bonus: 0 })
     } finally {
-      setAiPerfLoading(false)
+      if (reqId === aiPerfReqRef.current) setAiPerfLoading(false)
     }
   }
 
@@ -249,6 +307,12 @@ Rules:
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null)
   const transcriptRef = useRef('')
+  const micCancelledRef = useRef(false)
+  const micStartingRef = useRef(false)
+  useEffect(() => () => {
+    micCancelledRef.current = true
+    try { recognitionRef.current?.abort() } catch { /* not started */ }
+  }, [])
 
   const handleCameraPress = () => {
     setShowMediaMenu(false)
@@ -260,37 +324,14 @@ Rules:
     filesInputRef.current?.click()
   }
 
-  // Camera photos can be 5–10 MB raw; Vercel's body limit is 4.5 MB.
-  const compressImage = (file: File): Promise<{ base64: string; mimeType: string }> =>
-    new Promise((resolve, reject) => {
-      const img = new Image()
-      const url = URL.createObjectURL(file)
-      img.onload = () => {
-        const MAX = 1536
-        const scale = Math.min(1, MAX / Math.max(img.width, img.height))
-        const canvas = document.createElement('canvas')
-        canvas.width = Math.round(img.width * scale)
-        canvas.height = Math.round(img.height * scale)
-        canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height)
-        URL.revokeObjectURL(url)
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.9)
-        resolve({ base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' })
-      }
-      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image load failed')) }
-      img.src = url
-    })
-
   const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
     e.target.value = ''
-    setScanValues([DEFAULT_WORKOUT_SCAN])
-    setScanEditingIndex(null)
-    setScanDescription(null)
-    setScanLoading(true)
-    simulateScreenshot()
+    const id = beginScan(null)
     try {
-      const { base64, mimeType } = await compressImage(file)
+      // Camera photos can be 5–10 MB raw; Vercel's body limit is 4.5 MB.
+      const { base64, mimeType } = await compressImage(file, 1536, 0.9)
       const raw = await geminiVision(base64, mimeType, `You are a sprint & strength coach. Analyze this workout screenshot and extract ALL exercises. Return ONLY a valid JSON array — no markdown, no explanation.
 
 [
@@ -312,24 +353,54 @@ Rules:
 - Unstructured cardio: type:"energy", energyRating 3-5, unit:""
 - description: copy exact label+notation (e.g. "A: 3x60m", "B: 8x80m / walk back")
 - If nothing clear: [{"exercise":"Workout","type":"energy","sets":[],"energyRating":3,"description":"","unit":""}]`)
-      const parsedRaw = parseAIJson(raw)
-      if (parsedRaw == null) throw new Error('Could not parse AI response')
-      const items = Array.isArray(parsedRaw) ? parsedRaw : [parsedRaw]
-      setScanValues(items.map((p: Record<string, unknown>) => ({
-        exercise: (p.exercise as string) ?? 'Workout',
-        type: p.type === 'energy' ? 'energy' : 'weights',
-        sets: Array.isArray(p.sets) && (p.sets as unknown[]).length > 0
-          ? (p.sets as { reps?: number; weight?: number }[]).map(s => ({ reps: s.reps ?? 0, weight: s.weight ?? 0 }))
-          : [{ reps: 0, weight: 0 }],
-        energyRating: typeof p.energyRating === 'number' ? p.energyRating : 3,
-        unit: (typeof p.unit === 'string' ? p.unit : 'kg') as WeightUnit,
-      })))
-      setScanDescription(items.map((p: Record<string, unknown>) => p.description).filter(Boolean).join(' · ') || null)
-    } catch {
-      setScanDescription('AI scan failed — edit details manually')
+      const items = parseScanItems(parseAIJson(raw))
+      if (id !== scanReqRef.current) return
+      setScanValues(items)
+      setScanDescription(items.map(p => p.description).filter(Boolean).join(' · ') || null)
+    } catch (err) {
+      if (id !== scanReqRef.current) return
+      const msg = err instanceof Error && err.message.startsWith('Only images') ? err.message : 'AI scan failed — edit details manually'
+      setScanDescription(msg)
       setScanValues([DEFAULT_WORKOUT_SCAN])
     } finally {
-      setScanLoading(false)
+      if (id === scanReqRef.current) setScanLoading(false)
+    }
+  }
+
+  /** Starts a new scan and returns its id; anything still in flight becomes stale. */
+  function beginScan(description: string | null) {
+    const id = ++scanReqRef.current
+    setScanValues([DEFAULT_WORKOUT_SCAN])
+    setScanEditingIndex(null)
+    setScanDescription(description)
+    setScanLoading(true)
+    simulateScreenshot()
+    return id
+  }
+
+  const closeScanCard = () => {
+    scanReqRef.current++ // discard any result still on its way
+    dismissScreenshot()
+    setScanLoading(false)
+    setScanValues([DEFAULT_WORKOUT_SCAN])
+    setScanDescription(null)
+    setScanEditingIndex(null)
+  }
+
+  const runTextScan = async (input: string, prompt: string, fallbackDescription: string | null) => {
+    const id = beginScan(`"${input.slice(0, 80)}${input.length > 80 ? '…' : ''}"`)
+    try {
+      const raw = await groqText(prompt)
+      const items = parseScanItems(parseAIJson(raw))
+      if (id !== scanReqRef.current) return
+      setScanValues(items)
+      setScanDescription(items.map(p => p.description).filter(Boolean).join(' · ') || fallbackDescription)
+    } catch {
+      if (id !== scanReqRef.current) return
+      setScanValues([DEFAULT_WORKOUT_SCAN])
+      setScanDescription('Could not parse — edit manually')
+    } finally {
+      if (id === scanReqRef.current) setScanLoading(false)
     }
   }
 
@@ -351,6 +422,8 @@ Rules:
     recognition.maxAlternatives = 1
     recognitionRef.current = recognition
     transcriptRef.current = ''
+    micCancelledRef.current = false
+    micStartingRef.current = false
 
     recognition.onresult = (event: any) => {
       let combined = ''
@@ -360,46 +433,39 @@ Rules:
       transcriptRef.current = combined.trim()
     }
 
-    recognition.onerror = () => { setMicRecording(false); setMicReady(false) }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognition.onerror = (event: any) => {
+      setMicRecording(false)
+      setMicReady(false)
+      if (event?.error !== 'aborted') setNotice(micErrorMessage(event?.error))
+      if (event?.error !== 'no-speech') micCancelledRef.current = true
+    }
 
-    recognition.onend = async () => {
+    recognition.onend = () => {
+      micStartingRef.current = false
       setMicRecording(false)
       setMicReady(false)
       const transcript = transcriptRef.current.trim()
-      if (!transcript) return
+      transcriptRef.current = ''
+      // abort() (cancel) still fires onend — never submit what was heard after a cancel
+      if (micCancelledRef.current || !transcript) return
       setShowMediaMenu(false)
-      setScanLoading(true)
-      setScanDescription(`"${transcript}"`)
-      simulateScreenshot()
-      try {
-        const raw = await groqText(VOICE_WORKOUT_PROMPT(transcript))
-        const parsedRaw = parseAIJson(raw)
-        if (parsedRaw == null) throw new Error('Could not parse AI response')
-        const items = Array.isArray(parsedRaw) ? parsedRaw : [parsedRaw]
-        setScanValues(items.map((p: Record<string, unknown>) => ({
-          exercise: (p.exercise as string) ?? 'Workout',
-          type: p.type === 'energy' ? 'energy' : 'weights',
-          sets: Array.isArray(p.sets) && (p.sets as unknown[]).length > 0
-            ? (p.sets as { reps?: number; weight?: number }[]).map(s => ({ reps: s.reps ?? 0, weight: s.weight ?? 0 }))
-            : [{ reps: 0, weight: 0 }],
-          energyRating: typeof p.energyRating === 'number' ? p.energyRating : 3,
-          unit: (typeof p.unit === 'string' ? p.unit : 'kg') as WeightUnit,
-        })))
-        setScanDescription(items.map((p: Record<string, unknown>) => p.description).filter(Boolean).join(' · ') || `"${transcript}"`)
-      } catch {
-        setScanDescription('Could not parse — edit manually')
-      } finally {
-        setScanLoading(false)
-      }
+      runTextScan(transcript, VOICE_WORKOUT_PROMPT(transcript), `"${transcript.slice(0, 80)}"`)
     }
     setMicReady(true)
   }
 
   const startMicRecording = () => {
-    if (!recognitionRef.current) return
-    setMicRecording(true)
-    setMicReady(false)
-    recognitionRef.current.start()
+    if (!recognitionRef.current || micStartingRef.current) return
+    micStartingRef.current = true
+    try {
+      recognitionRef.current.start()
+      setMicRecording(true)
+      setMicReady(false)
+    } catch {
+      micStartingRef.current = false
+      setNotice('Microphone is busy — try again.')
+    }
   }
 
   const stopMicRecording = () => {
@@ -408,7 +474,9 @@ Rules:
   }
 
   const cancelMic = () => {
-    recognitionRef.current?.abort()
+    micCancelledRef.current = true
+    transcriptRef.current = ''
+    try { recognitionRef.current?.abort() } catch { /* not started */ }
     setMicReady(false)
     setMicRecording(false)
     setShowMediaMenu(false)
@@ -416,15 +484,13 @@ Rules:
 
   const handleTextSubmit = async () => {
     const input = textInput.trim()
-    if (!input) return
+    if (!input || textSubmittingRef.current) return
+    textSubmittingRef.current = true
     setTextMode(false)
     setTextInput('')
     setShowMediaMenu(false)
-    setScanLoading(true)
-    setScanDescription(`"${input}"`)
-    simulateScreenshot()
     try {
-      const raw = await groqText(`The user typed: "${input}". Extract ALL exercises as a JSON array — no markdown, no explanation.
+      await runTextScan(input, `The user typed: "${input}". Extract ALL exercises as a JSON array — no markdown, no explanation.
 [{"exercise":"<name>","type":"<weights|energy>","sets":[{"reps":<n>,"weight":<n>}],"energyRating":<1-5 or null>,"description":"<exact notation>","unit":"<m|kg|>"}]
 Rules:
 - One item per labelled exercise (A:, B:, C: or separate lines)
@@ -432,34 +498,21 @@ Rules:
 - "A: 3x60m" → description:"A: 3x60m", exercise:"60m Sprint", 3 sets {reps:1,weight:60}, unit:"m"
 - "bench press 4x8 80kg" → exercise:"Bench Press", 4 sets {reps:8,weight:80}, unit:"kg"
 - Bodyweight: weight:0, unit:""
-- Unstructured cardio: type:"energy", energyRating 3-5`)
-      const parsedRaw = parseAIJson(raw)
-      if (parsedRaw == null) throw new Error('Could not parse AI response')
-      const items = Array.isArray(parsedRaw) ? parsedRaw : [parsedRaw]
-      setScanValues(items.map((p: Record<string, unknown>) => ({
-        exercise: (p.exercise as string) ?? 'Workout',
-        type: p.type === 'energy' ? 'energy' : 'weights',
-        sets: Array.isArray(p.sets) && (p.sets as unknown[]).length > 0
-          ? (p.sets as { reps?: number; weight?: number }[]).map(s => ({ reps: s.reps ?? 0, weight: s.weight ?? 0 }))
-          : [{ reps: 0, weight: 0 }],
-        energyRating: typeof p.energyRating === 'number' ? p.energyRating : 3,
-        unit: (typeof p.unit === 'string' ? p.unit : 'kg') as WeightUnit,
-      })))
-      setScanDescription(items.map((p: Record<string, unknown>) => p.description).filter(Boolean).join(' · ') || null)
-    } catch {
-      setScanDescription('Could not parse — edit manually')
+- Unstructured cardio: type:"energy", energyRating 3-5`, null)
     } finally {
-      setScanLoading(false)
+      textSubmittingRef.current = false
     }
   }
 
   const handleCoachSend = async () => {
-    const text = coachInput.trim()
-    if (!text || coachThinking) return
+    const text = coachInput.trim().slice(0, MAX_COACH_INPUT)
+    if (!text || coachSendingRef.current) return
+    coachSendingRef.current = true
     setCoachMessages(prev => [...prev, { text, isUser: true }])
     setCoachInput('')
     setCoachThinking(true)
-    coachHistoryRef.current.push({ role: 'user', content: text })
+    const userTurn = { role: 'user', content: text }
+    coachHistoryRef.current = trimHistory([...coachHistoryRef.current, userTurn])
     setTimeout(() => coachEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
     try {
       const snap = healthSnapshot
@@ -478,49 +531,101 @@ Rules — one item per labelled exercise (A:, B:, or separate):
 
 For all other messages just reply as plain text.`
       const raw = await groqChat(coachHistoryRef.current, systemPrompt, { temperature: 0.2 })
-      coachHistoryRef.current.push({ role: 'assistant', content: raw })
-      const parsed = parseAIJson<{ reply?: string; workouts?: WorkoutScan[]; workout?: WorkoutScan }>(raw)
-      const msg: CoachMessage = parsed
-        ? { text: parsed.reply ?? raw, isUser: false, workouts: parsed.workouts ?? (parsed.workout ? [parsed.workout] : null) }
-        : { text: raw, isUser: false, workouts: null }
+      if (!raw.trim()) throw new Error('Empty AI reply')
+      coachHistoryRef.current = trimHistory([...coachHistoryRef.current, { role: 'assistant', content: raw }])
+      const parsed = parseAIJson<{ reply?: unknown; workouts?: unknown; workout?: unknown }>(raw)
+      let msg: CoachMessage
+      if (parsed && typeof parsed === 'object') {
+        const wArr = Array.isArray(parsed.workouts) ? parsed.workouts : parsed.workout ? [parsed.workout] : []
+        const workouts = wArr.map(normalizeScanItem).filter((w): w is WorkoutScan => w !== null)
+        msg = { text: typeof parsed.reply === 'string' ? parsed.reply : (workouts.length ? 'Here’s what I got:' : raw), isUser: false, workouts: workouts.length ? workouts : null }
+      } else {
+        msg = { text: raw, isUser: false, workouts: null }
+      }
       setCoachMessages(prev => [...prev, msg])
     } catch {
+      // Drop the failed turn so it isn't resent with every later message
+      coachHistoryRef.current = coachHistoryRef.current.filter(m => m !== userTurn)
       setCoachMessages(prev => [...prev, { text: "Couldn't reach AI — try again.", isUser: false }])
     } finally {
+      coachSendingRef.current = false
       setCoachThinking(false)
       setTimeout(() => coachEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
     }
   }
 
-  const toEntry = (sv: WorkoutScan): WorkoutEntry => ({
-    exercise: sv.exercise || 'Workout',
-    type: sv.type,
-    time: new Date().toLocaleTimeString(),
-    // energy mode: use weight field as per-set energy rating; fall back to energyRating
-    ...(sv.type === 'energy'
-      ? { energyRating: sv.sets[0]?.weight || sv.energyRating }
-      : { sets: sv.sets, unit: sv.unit }),
-  })
+  const logCoachCard = async (key: string, w: WorkoutScan) => {
+    if (loggingCoachRef.current.has(key) || loggedCoachCards.has(key)) return
+    loggingCoachRef.current.add(key)
+    try {
+      const ok = await logWorkoutDirect(scanToEntry(w))
+      if (ok) {
+        setLoggedCoachCards(prev => new Set(prev).add(key))
+        setCoachMessages(prev => [...prev, { text: `✓ Logged ${w.exercise}`, isUser: false }])
+      } else {
+        setCoachMessages(prev => [...prev, { text: `Couldn't save ${w.exercise} — try again.`, isUser: false }])
+      }
+      setTimeout(() => coachEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
+    } finally {
+      loggingCoachRef.current.delete(key)
+    }
+  }
+
+  // Energy editor in the scan sheet stores the 1-5 value in set.weight
+  const toEntry = (sv: WorkoutScan): WorkoutEntry => scanToEntry(sv, { energyFromSets: true })
 
   const handleLogOne = async (idx: number) => {
-    await logWorkoutDirect(toEntry(scanValues[idx]))
-    const remaining = scanValues.filter((_, i) => i !== idx)
-    if (remaining.length === 0) {
-      dismissScreenshot()
-      setScanValues([DEFAULT_WORKOUT_SCAN])
-      setScanDescription(null)
-    } else {
-      setScanValues(remaining)
+    const sv = scanValuesRef.current[idx]
+    if (!sv || savingScanRef.current || scanLoading || !isLoggableScan(sv)) return
+    savingScanRef.current = true
+    setSavingScan(true)
+    const reqId = scanReqRef.current
+    try {
+      const ok = await logWorkoutDirect(toEntry(sv))
+      if (!ok || reqId !== scanReqRef.current) return
+      // Remove by identity from the latest list, so edits to other rows during the save survive.
+      const remaining = scanValuesRef.current.filter(v => v !== sv)
+      if (remaining.length === 0) closeScanCard()
+      else { setScanValues(remaining); setScanEditingIndex(null) }
+    } finally {
+      savingScanRef.current = false
+      setSavingScan(false)
     }
-    setScanEditingIndex(null)
   }
 
   const handleLogAll = async () => {
-    for (const sv of scanValues) await logWorkoutDirect(toEntry(sv))
-    dismissScreenshot()
-    setScanValues([DEFAULT_WORKOUT_SCAN])
-    setScanDescription(null)
-    setScanEditingIndex(null)
+    if (savingScanRef.current || scanLoading) return
+    const toLog = scanValuesRef.current.filter(isLoggableScan)
+    if (toLog.length === 0) return
+    savingScanRef.current = true
+    setSavingScan(true)
+    const reqId = scanReqRef.current
+    try {
+      // One batched write — logging them one by one used to drop all but the last
+      const ok = await logWorkoutBatch(toLog.map(toEntry))
+      if (ok && reqId === scanReqRef.current) closeScanCard()
+    } finally {
+      savingScanRef.current = false
+      setSavingScan(false)
+    }
+  }
+
+  const closeLoggingModal = () => {
+    const typed = trackingMode === 'weights' && sets.some(s => s.reps > 0 || s.weight > 0)
+    if (typed && !window.confirm('Discard this exercise? The sets you entered will be lost.')) return
+    discardExercise()
+  }
+
+  const closeExerciseSelection = () => { setShowExerciseSelection(false); setSelectedWorkoutCategory(null); setCustomExerciseMode(false); setCustomExerciseName('') }
+
+  /** Custom exercises carry no category — never inherit the previous pick's. */
+  const startCustomExercise = (fromModal: boolean) => {
+    const name = cleanExerciseName(customExerciseName)
+    if (!name) return
+    setSelectedExercise(name)
+    setActiveLogCategory(undefined)
+    setCustomExerciseName('')
+    if (fromModal) { setShowExerciseSelection(false); setCustomExerciseMode(false) }
   }
 
   // Last 7 days for charts
@@ -540,8 +645,10 @@ For all other messages just reply as plain text.`
           const sessions = d.workouts.filter(w => w.exercise === g.exercise)
           let val = 0
           for (const w of sessions) {
-            if (w.type === 'weights' && w.sets) val = Math.max(val, ...w.sets.map(s => toKgValue(s.weight, w.unit)))
-            if (w.type === 'energy' && w.energyRating) val = Math.max(val, w.energyRating)
+            if (w.type === 'weights' && Array.isArray(w.sets)) {
+              for (const s of w.sets) { const v = toKgValue(Number(s?.weight), w.unit); if (Number.isFinite(v)) val = Math.max(val, v) }
+            }
+            if (w.type === 'energy' && Number.isFinite(Number(w.energyRating))) val = Math.max(val, Math.min(5, Number(w.energyRating)))
           }
           return { day: d.dayLabel, value: val }
         })
@@ -551,8 +658,26 @@ For all other messages just reply as plain text.`
 
   const hasVolumeData = weeklyVolumeData.some(d => d.volume > 0)
 
+  useEscape(!!selectedExercise, closeLoggingModal)
+  useEscape(showExerciseSelection && !selectedExercise, closeExerciseSelection)
+  useEscape(scanEditingIndex !== null, () => setScanEditingIndex(null))
+
+  const closeWorkoutEdit = () => { setEditingWorkoutIdx(null); setEditingWorkoutData(null); setEditError(null) }
+  /** Backdrop / × / Escape: confirm before throwing away unsaved edits. */
+  const requestCloseWorkoutEdit = () => {
+    if (editSaving) return
+    const dirty = editingWorkoutData && JSON.stringify(editingWorkoutData) !== editOriginalRef.current
+    if (dirty && !window.confirm('Discard your changes?')) return
+    closeWorkoutEdit()
+  }
+  useEscape(editingWorkoutIdx !== null, requestCloseWorkoutEdit)
+
+  const anyLoggable = scanValues.some(isLoggableScan)
+  const scanBusy = scanLoading || savingScan
+  const toast = saveError ?? notice
+
   return (
-    <div className="p-6 max-w-md mx-auto">
+    <div className="p-6 pb-32 max-w-md mx-auto relative">
       {/* Header + Enter Workout Mode */}
       <div className="flex items-center justify-between mb-6">
         <div style={{ width: '44px' }} />
@@ -565,6 +690,7 @@ For all other messages just reply as plain text.`
         {onEnterWorkoutMode && (
           <button
             onClick={onEnterWorkoutMode}
+            aria-label="Enter workout mode"
             className="monument-button flex items-center justify-center"
             style={{
               width: '44px',
@@ -575,17 +701,22 @@ For all other messages just reply as plain text.`
               boxShadow: '0 4px 0 rgba(139,90,62,0.25)',
             }}
           >
-            <Zap size={20} strokeWidth={2.5} color="#6B4423" />
+            <Zap aria-hidden="true" size={20} strokeWidth={2.5} color="#6B4423" />
           </button>
         )}
       </div>
 
+      {/* Overlays the header instead of pushing the cards down for 2.5s */}
       {celebration && (
         <div
           key={celebration}
-          className="celebration-banner monument-text text-center px-4 py-3 mb-4"
+          role="status"
+          aria-live="polite"
+          className="celebration-banner monument-text text-center px-4 py-3 absolute left-6 right-6 z-50 pointer-events-none"
           style={{
-            background: 'linear-gradient(135deg, rgba(255, 159, 102, 0.18) 0%, rgba(255, 184, 138, 0.12) 100%)',
+            top: 20,
+            // Solid base under the tint — the banner now floats over content
+            background: 'linear-gradient(135deg, rgba(255, 159, 102, 0.18) 0%, rgba(255, 184, 138, 0.12) 100%), #FFF4EA',
             border: '2px solid rgba(255, 159, 102, 0.35)',
             borderRadius: '12px',
             color: '#6B4423',
@@ -603,55 +734,60 @@ For all other messages just reply as plain text.`
         <div className="monument-card p-4 mb-6 relative" style={{ zIndex: 41 }}>
           {/* Header */}
           <div className="flex justify-between items-center mb-3">
-            <div>
+            <div className="min-w-0 flex-1" role="status" aria-live="polite">
               <span className="monument-text" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>
                 {scanLoading ? 'Analysing...' : 'Does this look right?'}
               </span>
               {scanDescription && !scanLoading && (
-                <div className="monument-text mt-0.5" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>{scanDescription}</div>
+                <div className="monument-text mt-0.5" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', overflowWrap: 'anywhere' }}>{scanDescription}</div>
               )}
             </div>
-            <button onClick={dismissScreenshot} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px' }}>
-              <X size={14} strokeWidth={2.5} color="#A0725A" />
+            <button onClick={closeScanCard} aria-label="Dismiss scan results" style={{ ...ICON_BTN, margin: '-10px -10px -10px 0' }}>
+              <X aria-hidden="true" size={14} strokeWidth={2.5} color="#A0725A" />
             </button>
           </div>
 
           {/* ── Multi-exercise list view (always shown when uploadedImage) ── */}
           <div>
             <div className="space-y-2 mb-3">
-              {scanValues.map((sv, idx) => (
+              {scanValues.map((sv, idx) => {
+                const canLog = !scanBusy && isLoggableScan(sv)
+                return (
                 <div key={idx} className="flex items-center gap-2 px-3 py-2" style={{ background: 'rgba(255,252,248,0.7)', border: '1.5px solid rgba(139,90,62,0.2)', borderRadius: '10px' }}>
                   <div className="flex-1 min-w-0">
-                    <div className="monument-text truncate" style={{ color: '#FF9F66', fontSize: '12px', fontWeight: '700' }}>{sv.exercise || 'Workout'}</div>
-                    <div className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>
-                      {sv.type === 'weights'
-                        ? `${sv.sets.length} sets · ${sv.sets[0]?.reps} reps${sv.sets[0]?.weight ? ` × ${sv.sets[0].weight}${sv.unit ? ' ' + sv.unit : ''}` : ''}`
-                        : `Energy: ${sv.energyRating}/5`}
-                    </div>
+                    <div className="monument-text truncate" style={{ color: '#B8581F', fontSize: '12px', fontWeight: '700' }}>{sv.exercise || 'Workout'}</div>
+                    <div className="monument-text" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>{describeScan(sv)}</div>
                   </div>
                   <button
                     onClick={() => setScanEditingIndex(idx)}
-                    className="monument-button px-2 py-1"
-                    style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '7px', border: '1.5px solid #8B5A3E', color: '#8B5A3E', fontSize: '9px', fontWeight: '700', flexShrink: 0 }}
+                    disabled={scanLoading}
+                    className="monument-button px-3"
+                    style={{ minHeight: 36, background: 'rgba(255,252,248,0.95)', borderRadius: '8px', border: '1.5px solid #8B5A3E', color: '#8B5A3E', fontSize: '10px', fontWeight: '700', flexShrink: 0, ...disabledStyle(scanLoading) }}
                   >
                     EDIT
                   </button>
                   <button
                     onClick={() => handleLogOne(idx)}
-                    className="monument-button px-2 py-1"
-                    style={{ background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '7px', border: '1.5px solid #8B5A3E', color: '#6B4423', fontSize: '9px', fontWeight: '700', flexShrink: 0 }}
+                    disabled={!canLog}
+                    className="monument-button px-3"
+                    style={{ minHeight: 36, background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '8px', border: '1.5px solid #8B5A3E', color: '#6B4423', fontSize: '10px', fontWeight: '700', flexShrink: 0, ...disabledStyle(!canLog) }}
                   >
                     LOG
                   </button>
                 </div>
-              ))}
+                )
+              })}
             </div>
+            {!scanLoading && !anyLoggable && (
+              <div className="monument-text text-center mb-2" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>Tap EDIT to add details before logging</div>
+            )}
             <button
               onClick={handleLogAll}
-              className="monument-button w-full py-2"
-              style={{ background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '10px', fontWeight: '700', boxShadow: '0 3px 0 rgba(139,90,62,0.25)' }}
+              disabled={scanBusy || !anyLoggable}
+              className="monument-button w-full py-2.5"
+              style={{ background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '11px', fontWeight: '700', boxShadow: '0 3px 0 rgba(139,90,62,0.25)', ...disabledStyle(scanBusy || !anyLoggable) }}
             >
-              {scanValues.length > 1 ? `✓ LOG ALL (${scanValues.length})` : '✓ LOG WORKOUT'}
+              {savingScan ? 'SAVING…' : scanValues.length > 1 ? `✓ LOG ALL (${scanValues.filter(isLoggableScan).length})` : '✓ LOG WORKOUT'}
             </button>
           </div>
         </div>
@@ -664,7 +800,7 @@ For all other messages just reply as plain text.`
             <Dumbbell size={13} strokeWidth={2.5} color="#FF9F66" />
             <span className="monument-text" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px' }}>WORKOUT</span>
           </div>
-          <span className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>{derivedWorkoutLevel}%</span>
+          <span className="monument-text" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>{derivedWorkoutLevel}%</span>
         </div>
         <div className="w-full mb-3" style={{ height: 8, background: 'rgba(255,159,102,0.15)', borderRadius: 6, border: '1.5px solid rgba(255,159,102,0.25)' }}>
           <div style={{ width: `${derivedWorkoutLevel}%`, height: '100%', background: 'linear-gradient(90deg,#FF9F66,#FFB88A)', borderRadius: 6, transition: 'width 0.4s ease' }} />
@@ -674,7 +810,7 @@ For all other messages just reply as plain text.`
             <Zap size={13} strokeWidth={2.5} color="#FFB88A" />
             <span className="monument-text" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px' }}>ENERGY</span>
           </div>
-          <span className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>{derivedEnergyLevel}%</span>
+          <span className="monument-text" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>{derivedEnergyLevel}%</span>
         </div>
         <div className="w-full" style={{ height: 8, background: 'rgba(255,184,138,0.15)', borderRadius: 6, border: '1.5px solid rgba(255,184,138,0.25)' }}>
           <div style={{ width: `${derivedEnergyLevel}%`, height: '100%', background: 'linear-gradient(90deg,#FFB88A,#FFD4A8)', borderRadius: 6, transition: 'width 0.4s ease' }} />
@@ -683,7 +819,7 @@ For all other messages just reply as plain text.`
         {/* Steps — live from Fitbit/Google Health via the server-side proxy */}
         <div className="mt-3">
           {stepsStatus === 'not_connected' ? null : stepsStatus === 'error' ? (
-            <div className="monument-text text-center" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', opacity: 0.7 }}>
+            <div className="monument-text text-center" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', opacity: 0.7 }}>
               Couldn't reach Fitbit — steps unavailable right now
             </div>
           ) : (
@@ -704,33 +840,36 @@ For all other messages just reply as plain text.`
         {/* Header row */}
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <Dumbbell size={18} color="#FF9F66" strokeWidth={2.5} />
+            <Dumbbell aria-hidden="true" size={18} color="#FF9F66" strokeWidth={2.5} />
             <span className="monument-text" style={{ color: '#6B4423', fontSize: '15px', fontWeight: '700' }}>Today</span>
-            {(scheduledTime || scheduledCategories.length > 0) && (
-              <div className="flex flex-wrap gap-1.5">
-                {scheduledTime && <span className="monument-text px-2 py-0.5" style={{ background: 'rgba(255,159,102,0.12)', border: '1px solid rgba(255,159,102,0.35)', borderRadius: '6px', color: '#E8956A', fontSize: '10px', fontWeight: '700' }}>{scheduledTime}</span>}
-                {scheduledCategories.map(c => <span key={c} className="monument-text px-2 py-0.5" style={{ background: 'rgba(139,90,62,0.08)', border: '1px solid rgba(139,90,62,0.2)', borderRadius: '6px', color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>{c}</span>)}
-              </div>
-            )}
           </div>
           <button
             onClick={() => setShowPlan(v => !v)}
-            className="monument-button px-2.5 py-1"
-            style={{ background: 'rgba(255,252,248,0.95)', border: '1.5px solid rgba(139,90,62,0.25)', borderRadius: '8px', color: '#A0725A', fontSize: '10px', fontWeight: '700' }}
+            aria-expanded={showPlan}
+            aria-controls="workout-plan-pickers"
+            className="monument-button px-3"
+            style={{ minHeight: 36, background: 'rgba(255,252,248,0.95)', border: '1.5px solid rgba(139,90,62,0.25)', borderRadius: '8px', color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}
           >
             {showPlan ? '▲ plan' : '▼ plan'}
           </button>
         </div>
+        {(scheduledTime || scheduledCategories.length > 0) && (
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {scheduledTime && <span className="monument-text px-2 py-0.5" style={{ background: 'rgba(255,159,102,0.12)', border: '1px solid rgba(255,159,102,0.35)', borderRadius: '6px', color: '#B8581F', fontSize: '10px', fontWeight: '700' }}>{scheduledTime}</span>}
+            {scheduledCategories.map(c => <span key={c} className="monument-text px-2 py-0.5" style={{ background: 'rgba(139,90,62,0.08)', border: '1px solid rgba(139,90,62,0.2)', borderRadius: '6px', color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>{c}</span>)}
+          </div>
+        )}
 
         {/* Collapsible plan pickers */}
         {showPlan && (
-          <div className="mb-3 pb-3" style={{ borderBottom: '1px solid rgba(139,90,62,0.12)' }}>
-            <div className="flex gap-2 mb-2">
+          <div id="workout-plan-pickers" className="mb-3 pb-3" style={{ borderBottom: '1px solid rgba(139,90,62,0.12)' }}>
+            <div className="flex gap-2 mb-2" role="group" aria-label="Planned time">
               {(['Morning', 'Afternoon', 'Evening', 'Night'] as const).map(t => (
                 <button
                   key={t}
                   onClick={() => setScheduledTime(scheduledTime === t ? null : t)}
-                  className="monument-button flex-1 py-1.5"
+                  aria-pressed={scheduledTime === t}
+                  className="monument-button flex-1 py-2"
                   style={{
                     background: scheduledTime === t ? 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)' : 'rgba(255,252,248,0.95)',
                     borderRadius: '8px',
@@ -741,21 +880,22 @@ For all other messages just reply as plain text.`
                 >{t}</button>
               ))}
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {([...TRAINING_CATEGORIES.map(c => ({ name: c.name, color: c.color })), { name: 'Rest Day', color: '#9B7FC8' }]).map(({ name, color }) => {
+            <div className="flex flex-wrap gap-1.5" role="group" aria-label="Planned categories">
+              {([...TRAINING_CATEGORIES, REST_DAY_CATEGORY].map(c => ({ name: c.name, color: c.color }))).map(({ name, color }) => {
                 const active = scheduledCategories.includes(name)
                 return (
                   <button
                     key={name}
                     onClick={() => toggleScheduledCategory(name)}
-                    className="monument-button px-2.5 py-1"
+                    aria-pressed={active}
+                    className="monument-button px-3 py-2"
                     style={{
                       background: active ? color : 'rgba(255,252,248,0.95)',
                       borderRadius: '7px',
                       border: `1.5px solid ${active ? color : 'rgba(139,90,62,0.2)'}`,
                       color: active ? '#fff' : '#A0725A',
-                      fontSize: '10px', fontWeight: '700',
-                      textShadow: active ? '0 1px 2px rgba(0,0,0,0.15)' : 'none',
+                      fontSize: '11px', fontWeight: '700',
+                      textShadow: active ? '0 1px 2px rgba(0,0,0,0.25)' : 'none',
                     }}
                   >{name}</button>
                 )
@@ -764,21 +904,23 @@ For all other messages just reply as plain text.`
           </div>
         )}
 
+        {scheduledCategories.length > 1 && (
+          <div className="monument-text mb-3" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>
+            With 2+ categories planned, pick exercises from the list below so each log gets tagged.
+          </div>
+        )}
+
         {/* Logged exercises */}
         {todayWorkouts.length > 0 && (
           <div className="mb-3 flex flex-col gap-2">
             {todayWorkouts.map((w, i) => {
-              const cat = TRAINING_CATEGORIES.find(c =>
-                w.category === c.name || (c.exercises as readonly string[]).includes(w.exercise)
-              )
+              const cat = categoryFor(w)
               const accentColor = cat?.color ?? '#FF9F66'
               const accentBorder = cat?.border ?? '#CC7040'
               const accentShadow = cat?.shadow ?? 'rgba(255,159,102,0.2)'
               const isWeights = w.type === 'weights' && w.sets && w.sets.length > 0
-              // Distance entries (km) aren't a weight — they don't contribute to volume
-              const totalVol = isWeights && w.unit !== 'km'
-                ? w.sets!.reduce((s, set) => s + set.reps * toKgValue(set.weight, w.unit), 0)
-                : 0
+              // Distance entries (m/km) aren't a weight — they don't contribute to volume
+              const totalVol = Math.round(entryVolumeKg(w, toKgValue))
               return (
                 <div key={i} style={{
                   background: 'rgba(255,252,248,0.92)',
@@ -794,12 +936,12 @@ For all other messages just reply as plain text.`
                     {/* Header row */}
                     <div className="flex items-start justify-between gap-2 mb-2">
                       <div className="flex-1 min-w-0">
-                        <div className="monument-text" style={{ color: '#4A2C0F', fontSize: '13px', fontWeight: '800', letterSpacing: '0.3px', lineHeight: 1.2 }}>
-                          {w.exercise.toUpperCase()}
+                        <div className="monument-text" style={{ color: '#4A2C0F', fontSize: '13px', fontWeight: '800', letterSpacing: '0.3px', lineHeight: 1.2, overflowWrap: 'anywhere' }}>
+                          {String(w.exercise ?? 'Workout').toUpperCase()}
                         </div>
                         {cat && (
                           <div className="mt-0.5">
-                            <span className="monument-text px-1.5 py-0.5" style={{ background: `${accentColor}18`, borderRadius: '4px', color: accentColor, fontSize: '8px', fontWeight: '700', letterSpacing: '0.5px' }}>
+                            <span className="monument-text px-1.5 py-0.5" style={{ background: `${accentColor}18`, borderRadius: '4px', color: accentColor, fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px' }}>
                               {cat.name.toUpperCase()}
                             </span>
                           </div>
@@ -808,11 +950,12 @@ For all other messages just reply as plain text.`
                       <div className="flex items-center gap-1.5 flex-shrink-0">
                         <button
                           onClick={() => openWorkoutEdit(i)}
-                          className="monument-button px-2.5 py-1.5"
-                          style={{ background: `${accentColor}18`, borderRadius: '8px', border: `1.5px solid ${accentBorder}50`, color: accentColor, fontSize: '9px', fontWeight: '800', letterSpacing: '0.4px' }}
+                          aria-label={`Edit ${w.exercise}`}
+                          className="monument-button px-3"
+                          style={{ minHeight: 40, background: `${accentColor}18`, borderRadius: '8px', border: `1.5px solid ${accentBorder}50`, color: accentBorder, fontSize: '10px', fontWeight: '800', letterSpacing: '0.4px' }}
                         >EDIT</button>
-                        <button onClick={() => removeWorkout(i)} className="monument-button p-1.5" style={{ background: 'rgba(211,47,47,0.08)', borderRadius: '8px', border: '1.5px solid rgba(211,47,47,0.2)' }}>
-                          <X size={12} strokeWidth={2.5} color="#D32F2F" />
+                        <button onClick={() => confirmRemoveWorkout(i)} aria-label={`Remove ${w.exercise}`} className="monument-button flex items-center justify-center" style={{ width: 40, height: 40, background: 'rgba(211,47,47,0.08)', borderRadius: '8px', border: '1.5px solid rgba(211,47,47,0.2)' }}>
+                          <X aria-hidden="true" size={14} strokeWidth={2.5} color="#D32F2F" />
                         </button>
                       </div>
                     </div>
@@ -830,7 +973,7 @@ For all other messages just reply as plain text.`
                             fontSize: '10px',
                             fontWeight: '700',
                           }}>
-                            {s.reps}<span style={{ color: '#A0725A', fontWeight: '600' }}>r</span> × {s.weight}<span style={{ color: '#A0725A', fontWeight: '600' }}>{unitLabel(w.unit).toLowerCase()}</span>
+                            {s.reps}<span style={{ color: '#A0725A', fontWeight: '600' }}>r</span> × {fmtWeight(s.weight)}<span style={{ color: '#A0725A', fontWeight: '600' }}>{unitLabel(w.unit).toLowerCase()}</span>
                           </span>
                         ))}
                       </div>
@@ -839,7 +982,7 @@ For all other messages just reply as plain text.`
                     {/* Energy rating as dots */}
                     {w.energyRating != null && w.energyRating > 0 && (
                       <div className="flex items-center gap-1.5 mt-1">
-                        <span className="monument-text" style={{ color: '#A0725A', fontSize: '8px', fontWeight: '700', letterSpacing: '0.5px' }}>ENERGY</span>
+                        <span className="monument-text" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px' }}>ENERGY</span>
                         <div className="flex gap-1">
                           {[1,2,3,4,5].map(n => (
                             <div key={n} style={{
@@ -855,7 +998,7 @@ For all other messages just reply as plain text.`
                     {/* Volume summary */}
                     {totalVol > 0 && (
                       <div className="mt-2 pt-2" style={{ borderTop: `1px solid ${accentColor}18` }}>
-                        <span className="monument-text" style={{ color: '#A0725A', fontSize: '8px', fontWeight: '700', letterSpacing: '0.5px' }}>
+                        <span className="monument-text" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px' }}>
                           VOLUME · <span style={{ color: accentColor }}>{totalVol.toLocaleString()} kg</span>
                           {'  '}·{'  '}{w.sets!.length} SET{w.sets!.length !== 1 ? 'S' : ''}
                         </span>
@@ -873,7 +1016,7 @@ For all other messages just reply as plain text.`
           <div className="mt-1">
             <div className="flex items-center gap-2 mb-2">
               <div style={{ flex: 1, height: 1, background: 'rgba(139,90,62,0.15)' }} />
-              <span className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px' }}>ADD EXERCISE</span>
+              <span className="monument-text" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px' }}>ADD EXERCISE</span>
               <div style={{ flex: 1, height: 1, background: 'rgba(139,90,62,0.15)' }} />
             </div>
 
@@ -882,25 +1025,16 @@ For all other messages just reply as plain text.`
               <input
                 type="text"
                 placeholder="Custom exercise name..."
+                aria-label="Custom exercise name"
+                maxLength={MAX_EXERCISE_NAME}
                 value={customExerciseName}
                 onChange={e => setCustomExerciseName(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && customExerciseName.trim()) {
-                    setSelectedExercise(customExerciseName.trim())
-                    setActiveLogCategory(undefined)
-                    setCustomExerciseName('')
-                  }
-                }}
-                className="flex-1 px-3 monument-text"
-                style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '10px', color: '#6B4423', fontSize: '12px', fontWeight: '700', boxShadow: '0 2px 0 rgba(139,90,62,0.15)' }}
+                onKeyDown={e => { if (e.key === 'Enter') startCustomExercise(false) }}
+                className="flex-1 min-w-0 px-3 monument-text"
+                style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '10px', color: '#6B4423', fontSize: '16px', fontWeight: '700', boxShadow: '0 2px 0 rgba(139,90,62,0.15)' }}
               />
               <button
-                onClick={() => {
-                  if (!customExerciseName.trim()) return
-                  setSelectedExercise(customExerciseName.trim())
-                  setActiveLogCategory(undefined)
-                  setCustomExerciseName('')
-                }}
+                onClick={() => startCustomExercise(false)}
                 className="monument-button px-3"
                 style={{ height: 40, background: customExerciseName.trim() ? 'linear-gradient(135deg,#FF9F66,#FFB88A)' : 'rgba(200,190,180,0.4)', borderRadius: '10px', border: `2px solid ${customExerciseName.trim() ? '#8B5A3E' : 'rgba(139,90,62,0.2)'}`, color: customExerciseName.trim() ? '#6B4423' : '#A0725A', fontSize: '11px', fontWeight: '700', boxShadow: customExerciseName.trim() ? '0 2px 0 rgba(139,90,62,0.2)' : 'none' }}
               >ADD</button>
@@ -928,22 +1062,23 @@ For all other messages just reply as plain text.`
               return (
                 <div className="flex flex-col gap-1.5" style={{ maxHeight: 220, overflowY: 'auto' }}>
                   {prev.length > 0 && (
-                    <div className="monument-text mb-0.5" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px' }}>PREVIOUSLY LOGGED</div>
+                    <div className="monument-text mb-0.5" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px' }}>PREVIOUSLY LOGGED</div>
                   )}
                   {prev.map(exercise => {
-                    const cat = TRAINING_CATEGORIES.find(c => (c.exercises as readonly string[]).includes(exercise))
+                    const plannedCat = plannedCategoryFor(exercise)
+                    const cat = TRAINING_CATEGORIES.find(c => c.name === plannedCat)
                     return (
                       <button key={exercise} onClick={() => { setSelectedExercise(exercise); setActiveLogCategory(plannedCategoryFor(exercise)) }}
                         className="monument-button w-full flex items-center gap-2 px-3 py-2 flex-shrink-0"
                         style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '9px', border: `1.5px solid ${cat?.border ?? 'rgba(255,159,102,0.4)'}`, textAlign: 'left' }}>
                         <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: cat?.color ?? '#FF9F66' }} />
-                        <span className="monument-text flex-1" style={{ color: '#6B4423', fontSize: '11px', fontWeight: '700' }}>{exercise}</span>
+                        <span className="monument-text flex-1 min-w-0 truncate" title={exercise} style={{ color: '#6B4423', fontSize: '11px', fontWeight: '700' }}>{exercise}</span>
                         <span style={{ color: '#A0725A', fontSize: '13px', fontWeight: '700' }}>›</span>
                       </button>
                     )
                   })}
                   {rest.length > 0 && prev.length > 0 && (
-                    <div className="monument-text mt-1 mb-0.5" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px' }}>
+                    <div className="monument-text mt-1 mb-0.5" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px' }}>
                       ALL {scheduledCategories.join(' / ').toUpperCase()}
                     </div>
                   )}
@@ -952,7 +1087,7 @@ For all other messages just reply as plain text.`
                       className="monument-button w-full flex items-center gap-2 px-3 py-2 flex-shrink-0"
                       style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '9px', border: '1.5px solid rgba(139,90,62,0.18)', textAlign: 'left' }}>
                       <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: 'rgba(139,90,62,0.3)' }} />
-                      <span className="monument-text flex-1" style={{ color: '#8B5A3E', fontSize: '11px', fontWeight: '700' }}>{exercise}</span>
+                      <span className="monument-text flex-1 min-w-0 truncate" title={exercise} style={{ color: '#8B5A3E', fontSize: '11px', fontWeight: '700' }}>{exercise}</span>
                       <span style={{ color: '#A0725A', fontSize: '13px', fontWeight: '700' }}>›</span>
                     </button>
                   ))}
@@ -982,28 +1117,34 @@ For all other messages just reply as plain text.`
         <div className="flex items-center gap-2 mb-3">
           <Activity size={15} strokeWidth={2.5} color="#FFD4A8" />
           <span className="monument-text" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>Cardio</span>
-          <span className="monument-text ml-auto" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>this week · {weeklyCardioMinutes}/{CARDIO_MAX_MINUTES} min</span>
+          <span className="monument-text ml-auto" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>this week · {weeklyCardioMinutes}/{CARDIO_MAX_MINUTES} min</span>
         </div>
         <div className="flex gap-2 items-center mb-1">
-          <button onClick={() => adjustCardio(-10)} className="monument-button p-2" style={BTN_BASE}>
-            <Minus size={16} strokeWidth={2.5} color="#6B4423" />
+          <button onClick={() => adjustCardio(-10)} aria-label="Decrease cardio minutes by 10" className="monument-button flex items-center justify-center" style={{ ...BTN_BASE, width: 44, height: 44, flexShrink: 0 }}>
+            <Minus aria-hidden="true" size={16} strokeWidth={2.5} color="#6B4423" />
           </button>
           <input
             type="number" min={0} max={CARDIO_MAX_MINUTES} step={10}
+            inputMode="numeric"
+            aria-label="Today's cardio minutes"
             value={cardioMinutes}
             onChange={e => adjustCardio((Math.min(CARDIO_MAX_MINUTES, Math.max(0, parseInt(e.target.value) || 0))) - cardioMinutes)}
-            className="flex-1 px-3 py-2 monument-text"
-            style={{ background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '10px', color: '#6B4423', fontSize: '14px', fontWeight: '700', boxShadow: '0 3px 0 rgba(139,90,62,0.2)', textAlign: 'center' }}
+            className="flex-1 min-w-0 px-3 py-2 monument-text"
+            style={{ background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '10px', color: '#6B4423', fontSize: '16px', fontWeight: '700', boxShadow: '0 3px 0 rgba(139,90,62,0.2)', textAlign: 'center' }}
           />
-          <button onClick={() => adjustCardio(10)} className="monument-button p-2" style={BTN_BASE}>
-            <Plus size={16} strokeWidth={2.5} color="#6B4423" />
+          <button onClick={() => adjustCardio(10)} aria-label="Increase cardio minutes by 10" className="monument-button flex items-center justify-center" style={{ ...BTN_BASE, width: 44, height: 44, flexShrink: 0 }}>
+            <Plus aria-hidden="true" size={16} strokeWidth={2.5} color="#6B4423" />
           </button>
         </div>
-        <div className="monument-text mb-2" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', textAlign: 'center' }}>today's minutes</div>
+        <div className="monument-text mb-2" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', textAlign: 'center' }}>today's minutes</div>
         <PixelBar label="WEEK" value={weeklyCardioMinutes} max={CARDIO_MAX_MINUTES} target={cardioTarget} color="#FFD4A8" unit="min" />
         {fitbitCardioStatus === 'not_connected' ? null : fitbitCardioStatus === 'error' ? (
-          <div className="monument-text text-center mt-2" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', opacity: 0.6 }}>
+          <div className="monument-text text-center mt-2" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>
             Couldn't reach Fitbit — cardio unavailable right now
+          </div>
+        ) : fitbitCardioStatus === 'loading' ? (
+          <div className="monument-text text-center mt-3 soft-pulse" role="status" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>
+            Syncing Fitbit…
           </div>
         ) : (
           <div className="mt-3">
@@ -1031,18 +1172,19 @@ For all other messages just reply as plain text.`
 
       {/* Exercise Logging Modal */}
       {selectedExercise && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(107, 68, 35, 0.7)', backdropFilter: 'blur(8px)' }} onClick={() => setSelectedExercise(null)}>
-          <div className="monument-card p-6 max-w-md w-full" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-4">
-              <div className="monument-text" style={{ color: '#6B4423', fontSize: '13px', fontWeight: '700' }}>{selectedExercise}</div>
-              <button onClick={() => setSelectedExercise(null)} className="monument-button" style={{ ...BTN_BASE, color: '#6B4423', fontSize: '18px', fontWeight: '700', lineHeight: '1', width: '32px', height: '32px' }}>×</button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(107, 68, 35, 0.7)', backdropFilter: 'blur(8px)' }} onClick={closeLoggingModal}>
+          <div className="monument-card p-6 max-w-md w-full max-h-[90dvh] overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="wt-log-title" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center gap-2 mb-4">
+              <div id="wt-log-title" className="monument-text flex-1 min-w-0" style={{ color: '#6B4423', fontSize: '13px', fontWeight: '700', overflowWrap: 'anywhere' }}>{selectedExercise}</div>
+              <button onClick={closeLoggingModal} aria-label="Close" className="monument-button flex-shrink-0" style={{ ...BTN_BASE, color: '#6B4423', fontSize: '18px', fontWeight: '700', lineHeight: '1', width: '40px', height: '40px' }}>×</button>
             </div>
 
-            <div className="flex gap-2 mb-4">
+            <div className="flex gap-2 mb-4" role="group" aria-label="Tracking mode">
               {(['energy', 'weights'] as const).map(mode => (
                 <button
                   key={mode}
                   onClick={() => setTrackingMode(mode)}
+                  aria-pressed={trackingMode === mode}
                   className="monument-button flex-1 py-2"
                   style={{ background: trackingMode === mode ? 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)' : 'rgba(255, 252, 248, 0.95)', borderRadius: '10px', border: '2px solid #8B5A3E', color: trackingMode === mode ? '#6B4423' : '#8B5A3E', fontSize: '10px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)' }}
                 >
@@ -1054,11 +1196,12 @@ For all other messages just reply as plain text.`
             {trackingMode === 'energy' ? (
               <div className="mb-4">
                 <div className="monument-text mb-3 text-center" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>How did you feel? (1-5)</div>
-                <div className="flex justify-center gap-2">
+                <div className="flex justify-center gap-2" role="group" aria-label="How did you feel">
                   {[1, 2, 3, 4, 5].map(r => (
                     <button
                       key={r}
                       onClick={() => setEnergyRating(r)}
+                      aria-pressed={energyRating === r}
                       className="monument-button w-12 h-12"
                       style={{ background: energyRating === r ? 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)' : 'rgba(255, 252, 248, 0.95)', borderRadius: '10px', border: '2px solid #8B5A3E', color: energyRating === r ? '#6B4423' : '#8B5A3E', fontSize: '14px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)' }}
                     >
@@ -1070,40 +1213,45 @@ For all other messages just reply as plain text.`
             ) : (
               <div className="mb-4">
                 <div className="flex items-center justify-end gap-2 mb-2">
-                  <span className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>UNIT</span>
+                  <span className="monument-text" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>UNIT</span>
                   <button
                     onClick={() => setUnit(toggleKgLbs(unit))}
-                    className="monument-button px-3 py-1"
-                    style={{ background: 'rgba(255, 252, 248, 0.95)', borderRadius: '8px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}
+                    aria-label={`Weight unit: ${unitLabel(unit)}. Tap to switch`}
+                    className="monument-button px-3"
+                    style={{ minHeight: 36, background: 'rgba(255, 252, 248, 0.95)', borderRadius: '8px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '11px', fontWeight: '700' }}
                   >
                     {unitLabel(unit)}
                   </button>
                 </div>
                 {sets.map((set, i) => (
-                  <div key={i} className="grid grid-cols-3 gap-2 mb-3">
+                  <div key={i} className="grid gap-2 mb-3 items-end" style={{ gridTemplateColumns: '1fr 1fr 1fr 40px' }}>
+                    <div className="monument-text pb-3" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>SET {i + 1}</div>
                     <div>
-                      <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>SET {i + 1}</label>
-                    </div>
-                    <div>
-                      <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>REPS</label>
+                      <label htmlFor={`main-reps-${i}`} className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>REPS</label>
                       <input
+                        id={`main-reps-${i}`}
                         type="text" inputMode="numeric"
                         placeholder="0"
-                        {...arithField(`main-reps-${i}`, set.reps, n => updateSet(i, 'reps', n), { integer: true })}
-                        className="w-full px-2 py-1 monument-text"
-                        style={{ background: 'rgba(255, 252, 248, 0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '12px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)', textAlign: 'center' }}
+                        {...arithField(`main-reps-${i}`, set.reps, n => updateSet(i, 'reps', Math.min(999, n)), { integer: true })}
+                        className="w-full px-2 monument-text"
+                        style={{ minHeight: 40, background: 'rgba(255, 252, 248, 0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '16px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)', textAlign: 'center' }}
                       />
                     </div>
                     <div>
-                      <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>{unitLabel(unit)}</label>
+                      <label htmlFor={`main-weight-${i}`} className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>{unitLabel(unit)}</label>
                       <input
+                        id={`main-weight-${i}`}
                         type="text" inputMode="decimal"
                         placeholder="0"
-                        {...arithField(`main-weight-${i}`, set.weight, n => updateSet(i, 'weight', n))}
-                        className="w-full px-2 py-1 monument-text"
-                        style={{ background: 'rgba(255, 252, 248, 0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '12px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)', textAlign: 'center' }}
+                        {...arithField(`main-weight-${i}`, set.weight, n => updateSet(i, 'weight', Math.min(1000, n)))}
+                        className="w-full px-2 monument-text"
+                        style={{ minHeight: 40, background: 'rgba(255, 252, 248, 0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '16px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)', textAlign: 'center' }}
                       />
                     </div>
+                    <button onClick={() => removeSet(i)} disabled={sets.length <= 1} aria-label={`Remove set ${i + 1}`}
+                      style={{ ...ICON_BTN, visibility: sets.length > 1 ? 'visible' : 'hidden' }}>
+                      <X aria-hidden="true" size={14} strokeWidth={2.5} color="#A0725A" />
+                    </button>
                   </div>
                 ))}
                 <button onClick={addSet} className="monument-button w-full py-2 mb-3" style={{ background: 'rgba(255, 252, 248, 0.95)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '10px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)' }}>
@@ -1114,55 +1262,12 @@ For all other messages just reply as plain text.`
 
             <button
               onClick={() => handleLogWithAIScore(activeLogCategory)}
+              disabled={trackingMode === 'weights' && !sets.some(s => s.reps > 0)}
               className="monument-button w-full mb-2 py-3"
-              style={{ background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '12px', border: '3px solid #8B5A3E', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)', color: '#6B4423', fontSize: '11px', fontWeight: '700' }}
+              style={{ background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '12px', border: '3px solid #8B5A3E', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)', color: '#6B4423', fontSize: '11px', fontWeight: '700', ...disabledStyle(trackingMode === 'weights' && !sets.some(s => s.reps > 0)) }}
             >
               LOG WORKOUT
             </button>
-
-            {/* AI Performance Insight */}
-            {(aiPerfLoading || aiPerf) && (
-              <div
-                className="mb-4 px-4 py-3 flex items-center gap-3"
-                style={{
-                  background: aiPerf?.score === 5
-                    ? 'linear-gradient(135deg, rgba(255,107,107,0.15), rgba(255,159,102,0.15))'
-                    : aiPerf?.score === 4
-                    ? 'linear-gradient(135deg, rgba(255,159,102,0.15), rgba(255,184,138,0.15))'
-                    : 'rgba(255,252,248,0.8)',
-                  borderRadius: '12px',
-                  border: `2px solid ${aiPerf?.score === 5 ? '#FF6B6B' : aiPerf?.score === 4 ? '#FF9F66' : 'rgba(139,90,62,0.2)'}`,
-                  boxShadow: aiPerf?.score === 5 ? '0 0 16px rgba(255,107,107,0.25)' : 'none',
-                }}
-              >
-                {aiPerfLoading ? (
-                  <>
-                    <div className="flex gap-1">
-                      {[0, 1, 2].map(i => (
-                        <div key={i} className="w-1.5 h-1.5 rounded-full soft-pulse" style={{ background: '#FF9F66', animationDelay: `${i * 0.15}s` }} />
-                      ))}
-                    </div>
-                    <span className="monument-text" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700' }}>Analysing your performance...</span>
-                  </>
-                ) : aiPerf ? (
-                  <>
-                    <div className="flex gap-0.5">
-                      {Array.from({ length: 5 }, (_, i) => (
-                        <div key={i} style={{ width: 8, height: 8, borderRadius: '50%', background: i < aiPerf.score ? (aiPerf.score === 5 ? '#FF6B6B' : '#FF9F66') : 'rgba(139,90,62,0.2)' }} />
-                      ))}
-                    </div>
-                    <span className="monument-text flex-1" style={{ color: aiPerf.score === 5 ? '#CC3333' : '#6B4423', fontSize: '11px', fontWeight: '700' }}>
-                      {aiPerf.verdict}
-                    </span>
-                    {aiPerf.bonus > 0 && (
-                      <span className="monument-text px-2 py-0.5" style={{ background: 'rgba(255,159,102,0.2)', border: '1px solid #FF9F66', borderRadius: '6px', color: '#FF9F66', fontSize: '9px', fontWeight: '700' }}>
-                        +{aiPerf.bonus} LVL
-                      </span>
-                    )}
-                  </>
-                ) : null}
-              </div>
-            )}
 
             {exerciseHistoryData[selectedExercise]?.length > 0 ? (
               <ResponsiveContainer width="100%" height={220}>
@@ -1180,25 +1285,88 @@ For all other messages just reply as plain text.`
         </div>
       )}
 
+      {/* AI Performance Insight — outside the logging modal, which closes the moment LOG is tapped */}
+            {(aiPerfLoading || aiPerf) && !selectedExercise && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="fixed z-[55] left-1/2 px-4 py-3 flex items-center gap-3"
+                style={{
+                  top: 72, transform: 'translateX(-50%)', width: 'min(calc(100vw - 32px), 400px)',
+                  background: aiPerf?.score === 5
+                    ? 'linear-gradient(135deg, rgba(255,107,107,0.15), rgba(255,159,102,0.15)), #FFF8F1'
+                    : aiPerf?.score === 4
+                    ? 'linear-gradient(135deg, rgba(255,159,102,0.15), rgba(255,184,138,0.15)), #FFF8F1'
+                    : '#FFF8F1',
+                  borderRadius: '12px',
+                  border: `2px solid ${aiPerf?.score === 5 ? '#FF6B6B' : aiPerf?.score === 4 ? '#FF9F66' : 'rgba(139,90,62,0.2)'}`,
+                  boxShadow: aiPerf?.score === 5 ? '0 0 16px rgba(255,107,107,0.25)' : 'none',
+                }}
+              >
+                {aiPerfLoading ? (
+                  <>
+                    <div className="flex gap-1">
+                      {[0, 1, 2].map(i => (
+                        <div key={i} className="w-1.5 h-1.5 rounded-full soft-pulse" style={{ background: '#FF9F66', animationDelay: `${i * 0.15}s` }} />
+                      ))}
+                    </div>
+                    <span className="monument-text" style={{ color: '#8B5A3E', fontSize: '11px', fontWeight: '700' }}>Analysing your performance...</span>
+                  </>
+                ) : aiPerf ? (
+                  <>
+                    <div className="flex gap-0.5" aria-hidden="true">
+                      {Array.from({ length: 5 }, (_, i) => (
+                        <div key={i} style={{ width: 8, height: 8, borderRadius: '50%', background: i < aiPerf.score ? (aiPerf.score === 5 ? '#FF6B6B' : '#FF9F66') : 'rgba(139,90,62,0.2)' }} />
+                      ))}
+                    </div>
+                    <span className="monument-text flex-1" style={{ color: aiPerf.score === 5 ? '#CC3333' : '#6B4423', fontSize: '11px', fontWeight: '700' }}>
+                      {aiPerf.verdict}
+                    </span>
+                    {aiPerf.bonus > 0 && (
+                      <span className="monument-text px-2 py-0.5" style={{ background: 'rgba(255,159,102,0.2)', border: '1px solid #FF9F66', borderRadius: '6px', color: '#FF9F66', fontSize: '9px', fontWeight: '700' }}>
+                        +{aiPerf.bonus} LVL
+                      </span>
+                    )}
+                  </>
+                ) : null}
+              </div>
+            )}
+
+
       {/* ── Edit Workout Modal ── */}
       {editingWorkoutIdx !== null && editingWorkoutData && (() => {
         const ed = editingWorkoutData
-        const dismiss = () => { setEditingWorkoutIdx(null); setEditingWorkoutData(null) }
+        const dismiss = requestCloseWorkoutEdit
         const updateSets = (newSets: WorkoutSet[]) => setEditingWorkoutData(prev => prev ? { ...prev, sets: newSets } : prev)
         const cycleEditUnit = () => setEditingWorkoutData(prev => prev ? { ...prev, ...toggleSetsUnit(prev.sets, prev.unit) } : prev)
 
         const handleSave = async () => {
-          const entry: WorkoutEntry = {
-            exercise: ed.exercise,
-            type: 'weights',
-            time: todayWorkouts[editingWorkoutIdx]?.time ?? new Date().toLocaleTimeString(),
-            sets: ed.sets,
-            unit: ed.unit,
-            energyRating: ed.energyRating ?? 3,
-          }
-          const idx = editingWorkoutIdx
-          dismiss()
-          await updateWorkoutEntryAndSave(idx, entry)
+          if (editSaving) return
+          const original = todayWorkouts[editingWorkoutIdx]
+          // Keep the entry's own type — energy / Rest Day entries must not become 0x0 weights entries
+          const entry: WorkoutEntry = ed.type === 'energy'
+            ? {
+                exercise: ed.exercise,
+                type: 'energy',
+                time: original?.time ?? new Date().toLocaleTimeString(),
+                energyRating: ed.energyRating ?? 3,
+                ...(original?.category ? { category: original.category } : {}),
+              }
+            : {
+                exercise: ed.exercise,
+                type: 'weights',
+                time: original?.time ?? new Date().toLocaleTimeString(),
+                sets: ed.sets.filter(x => x.reps > 0 || x.weight > 0),
+                unit: ed.unit,
+                energyRating: ed.energyRating ?? 3,
+                ...(original?.category ? { category: original.category } : {}),
+              }
+          setEditSaving(true)
+          setEditError(null)
+          const ok = await updateWorkoutEntryAndSave(editingWorkoutIdx, entry)
+          setEditSaving(false)
+          if (ok) closeWorkoutEdit()
+          else setEditError("Couldn't save — check your connection and try again.")
         }
 
         return (
@@ -1206,21 +1374,26 @@ For all other messages just reply as plain text.`
             style={{ background: 'rgba(107,68,35,0.7)', backdropFilter: 'blur(8px)' }}
             onClick={dismiss}>
             <div className="monument-card w-full max-w-md max-h-[90vh] flex flex-col overflow-hidden"
+              role="dialog" aria-modal="true" aria-labelledby="wt-edit-title"
               style={{ padding: '24px 20px 20px' }}
               onClick={e => e.stopPropagation()}>
 
               {/* Header */}
-              <div className="flex items-center justify-between mb-4 flex-shrink-0">
-                <div className="monument-text" style={{ color: '#6B4423', fontSize: '15px', fontWeight: '700', letterSpacing: '0.5px' }}>
+              <div className="flex items-center justify-between gap-2 mb-4 flex-shrink-0">
+                <div id="wt-edit-title" className="monument-text flex-1 min-w-0 truncate" title={ed.exercise} style={{ color: '#6B4423', fontSize: '15px', fontWeight: '700', letterSpacing: '0.5px' }}>
                   EDIT {ed.exercise.toUpperCase()}
                 </div>
-                <div className="flex items-center gap-2">
-                  <button onClick={cycleEditUnit}
-                    className="monument-button px-3"
-                    style={{ height: 40, background: 'rgba(255,252,248,0.95)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '11px', fontWeight: '700' }}>
-                    {unitLabel(ed.unit)}
-                  </button>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {ed.type === 'weights' && !isDistanceUnit(ed.unit) && (
+                    <button onClick={cycleEditUnit}
+                      aria-label={`Weight unit: ${unitLabel(ed.unit)}. Tap to switch`}
+                      className="monument-button px-3"
+                      style={{ height: 40, background: 'rgba(255,252,248,0.95)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '11px', fontWeight: '700' }}>
+                      {unitLabel(ed.unit)}
+                    </button>
+                  )}
                   <button onClick={dismiss}
+                    aria-label="Close"
                     className="monument-button"
                     style={{ width: 40, height: 40, borderRadius: '12px', background: 'linear-gradient(135deg,#FF9F66,#FFB88A)', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '18px', fontWeight: '700', boxShadow: '0 3px 0 rgba(139,90,62,0.25)' }}>
                     ×
@@ -1228,33 +1401,39 @@ For all other messages just reply as plain text.`
                 </div>
               </div>
 
-              {/* Scrollable area — sets + energy, always both */}
+              {/* Scrollable area — sets (weights entries only) + energy */}
               <div className="overflow-y-auto flex-1">
                 {/* Sets / Reps */}
-                {ed.sets.map((s, si) => (
+                {ed.type === 'weights' && ed.sets.map((s, si) => (
                   <div key={si} className="flex items-center gap-3 mb-4">
                     <div className="monument-text flex-shrink-0" style={{ color: '#6B4423', fontSize: '11px', fontWeight: '700', width: 44 }}>SET {si + 1}</div>
                     <div className="flex-1">
-                      <div className="monument-text mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px' }}>REPS</div>
+                      <label htmlFor={`edit-reps-${si}`} className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px' }}>REPS</label>
                       <input
+                        id={`edit-reps-${si}`}
                         type="text" inputMode="numeric" placeholder="0"
-                        {...arithField(`edit-reps-${si}`, s.reps, n => updateSets(ed.sets.map((x, xi) => xi === si ? { ...x, reps: n } : x)), { integer: true })}
+                        {...arithField(`edit-reps-${si}`, s.reps, n => updateSets(ed.sets.map((x, xi) => xi === si ? { ...x, reps: Math.min(999, n) } : x)), { integer: true })}
                         className="w-full monument-text"
                         style={{ height: 56, background: '#fff', border: '2px solid #C49A6C', borderRadius: '12px', color: '#6B4423', fontSize: '18px', fontWeight: '700', textAlign: 'center', boxShadow: '0 3px 0 rgba(139,90,62,0.15)' }}
                       />
                     </div>
                     <div className="flex-1">
-                      <div className="monument-text mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px' }}>WEIGHT ({unitLabel(ed.unit)})</div>
+                      <label htmlFor={`edit-weight-${si}`} className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px' }}>WEIGHT ({unitLabel(ed.unit)})</label>
                       <input
+                        id={`edit-weight-${si}`}
                         type="text" inputMode="decimal" placeholder="0"
-                        {...arithField(`edit-weight-${si}`, s.weight, n => updateSets(ed.sets.map((x, xi) => xi === si ? { ...x, weight: n } : x)))}
+                        {...arithField(`edit-weight-${si}`, s.weight, n => updateSets(ed.sets.map((x, xi) => xi === si ? { ...x, weight: Math.min(1000, n) } : x)))}
                         className="w-full monument-text"
                         style={{ height: 56, background: '#fff', border: '2px solid #C49A6C', borderRadius: '12px', color: '#6B4423', fontSize: '18px', fontWeight: '700', textAlign: 'center', boxShadow: '0 3px 0 rgba(139,90,62,0.15)' }}
                       />
                     </div>
-                    <button onClick={() => ed.sets.length > 1 && updateSets(ed.sets.filter((_, xi) => xi !== si))}
-                      style={{ background: 'none', border: 'none', cursor: ed.sets.length > 1 ? 'pointer' : 'default', padding: '4px', flexShrink: 0 }}>
-                      <X size={16} strokeWidth={2.5} color={ed.sets.length > 1 ? '#A0725A' : 'transparent'} />
+                    <button onClick={() => updateSets(ed.sets.filter((_, xi) => xi !== si))}
+                      disabled={ed.sets.length <= 1}
+                      aria-label={`Remove set ${si + 1}`}
+                      aria-hidden={ed.sets.length <= 1}
+                      tabIndex={ed.sets.length <= 1 ? -1 : 0}
+                      style={{ ...ICON_BTN, visibility: ed.sets.length > 1 ? 'visible' : 'hidden' }}>
+                      <X aria-hidden="true" size={16} strokeWidth={2.5} color="#A0725A" />
                     </button>
                   </div>
                 ))}
@@ -1262,16 +1441,17 @@ For all other messages just reply as plain text.`
                 {/* Divider */}
                 <div className="flex items-center gap-3 mb-4">
                   <div style={{ flex: 1, height: 1, background: 'rgba(139,90,62,0.15)' }} />
-                  <span className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px' }}>ENERGY LEVEL (1-5)</span>
+                  <span className="monument-text" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px' }}>ENERGY LEVEL (1-5)</span>
                   <div style={{ flex: 1, height: 1, background: 'rgba(139,90,62,0.15)' }} />
                 </div>
 
                 {/* Energy buttons */}
-                <div className="flex gap-3 justify-center mb-2">
+                <div className="flex gap-3 justify-center mb-2" role="group" aria-label="Energy level">
                   {[1, 2, 3, 4, 5].map(v => {
                     const active = (ed.energyRating ?? 3) === v
                     return (
                       <button key={v}
+                        aria-pressed={active}
                         onClick={() => setEditingWorkoutData(prev => prev ? { ...prev, energyRating: v } : prev)}
                         className="monument-button"
                         style={{ flex: 1, height: 56, borderRadius: '14px', background: active ? 'linear-gradient(135deg,#FF9F66,#FFB88A)' : '#fff', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '20px', fontWeight: '700', boxShadow: active ? '0 4px 0 rgba(139,90,62,0.25)' : '0 3px 0 rgba(139,90,62,0.15)' }}>
@@ -1284,14 +1464,17 @@ For all other messages just reply as plain text.`
 
               {/* Buttons */}
               <div className="flex-shrink-0 mt-3">
-                <button
+                {editError && (
+                  <div role="alert" className="monument-text text-center mb-2" style={{ color: '#B03A2E', fontSize: '11px', fontWeight: '700' }}>{editError}</div>
+                )}
+                {ed.type === 'weights' && <button
                   onClick={() => updateSets([...ed.sets, { reps: ed.sets[ed.sets.length - 1]?.reps ?? 0, weight: ed.sets[ed.sets.length - 1]?.weight ?? 0 }])}
                   className="monument-button w-full mb-3"
                   style={{ height: 52, background: '#fff', borderRadius: '14px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '12px', fontWeight: '700', boxShadow: '0 3px 0 rgba(139,90,62,0.2)', letterSpacing: '0.5px' }}
-                >+ ADD SET</button>
-                <button onClick={handleSave} className="monument-button w-full"
-                  style={{ height: 56, background: 'linear-gradient(135deg,#FF9F66,#FFB88A)', borderRadius: '14px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '13px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139,90,62,0.25)', letterSpacing: '0.5px' }}
-                >SAVE CHANGES</button>
+                >+ ADD SET</button>}
+                <button onClick={handleSave} disabled={editSaving} className="monument-button w-full"
+                  style={{ height: 56, background: 'linear-gradient(135deg,#FF9F66,#FFB88A)', borderRadius: '14px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '13px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139,90,62,0.25)', letterSpacing: '0.5px', ...disabledStyle(editSaving) }}
+                >{editSaving ? 'SAVING…' : 'SAVE CHANGES'}</button>
               </div>
 
             </div>
@@ -1305,9 +1488,9 @@ For all other messages just reply as plain text.`
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4"
           style={{ background: 'rgba(107, 68, 35, 0.7)', backdropFilter: 'blur(8px)' }}
-          onClick={() => { setShowExerciseSelection(false); setSelectedWorkoutCategory(null); setCustomExerciseMode(false); setCustomExerciseName('') }}
+          onClick={closeExerciseSelection}
         >
-          <div className="monument-card p-6 max-w-md w-full max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+          <div className="monument-card p-6 max-w-md w-full max-h-[80vh] flex flex-col" role="dialog" aria-modal="true" aria-label="Select exercise" onClick={e => e.stopPropagation()}>
 
             {/* Header */}
             <div className="flex justify-between items-center mb-5 flex-shrink-0">
@@ -1315,10 +1498,11 @@ For all other messages just reply as plain text.`
                 {(selectedWorkoutCategory || customExerciseMode) && (
                   <button
                     onClick={() => { setSelectedWorkoutCategory(null); setCustomExerciseMode(false); setCustomExerciseName('') }}
-                    className="monument-button p-1.5"
-                    style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '8px', border: '2px solid #8B5A3E', boxShadow: '0 2px 0 rgba(139,90,62,0.2)' }}
+                    aria-label="Back"
+                    className="monument-button flex items-center justify-center"
+                    style={{ width: 40, height: 40, background: 'rgba(255,252,248,0.95)', borderRadius: '8px', border: '2px solid #8B5A3E', boxShadow: '0 2px 0 rgba(139,90,62,0.2)' }}
                   >
-                    <span style={{ color: '#8B5A3E', fontSize: '14px', fontWeight: '700', lineHeight: 1 }}>‹</span>
+                    <span aria-hidden="true" style={{ color: '#8B5A3E', fontSize: '14px', fontWeight: '700', lineHeight: 1 }}>‹</span>
                   </button>
                 )}
                 <div className="monument-text" style={{ color: '#6B4423', fontSize: '13px', fontWeight: '700', letterSpacing: '0.5px' }}>
@@ -1326,9 +1510,10 @@ For all other messages just reply as plain text.`
                 </div>
               </div>
               <button
-                onClick={() => { setShowExerciseSelection(false); setSelectedWorkoutCategory(null); setCustomExerciseMode(false); setCustomExerciseName('') }}
+                onClick={closeExerciseSelection}
+                aria-label="Close"
                 className="monument-button"
-                style={{ background: 'linear-gradient(135deg,#FF9F66,#FFB88A)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '16px', fontWeight: '700', width: '36px', height: '36px', boxShadow: '0 3px 0 rgba(139,90,62,0.25)' }}
+                style={{ background: 'linear-gradient(135deg,#FF9F66,#FFB88A)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '16px', fontWeight: '700', width: '40px', height: '40px', boxShadow: '0 3px 0 rgba(139,90,62,0.25)' }}
               >×</button>
             </div>
 
@@ -1340,17 +1525,12 @@ For all other messages just reply as plain text.`
                   type="text"
                   placeholder="Enter exercise name..."
                   value={customExerciseName}
+                  maxLength={MAX_EXERCISE_NAME}
+                  aria-label="Exercise name"
                   onChange={e => setCustomExerciseName(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && customExerciseName.trim()) {
-                      setSelectedExercise(customExerciseName.trim())
-                      setShowExerciseSelection(false)
-                      setCustomExerciseMode(false)
-                      setCustomExerciseName('')
-                    }
-                  }}
+                  onKeyDown={e => { if (e.key === 'Enter') startCustomExercise(true) }}
                   className="w-full px-4 monument-text mb-6"
-                  style={{ height: 52, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '12px', color: '#6B4423', fontSize: '14px', fontWeight: '700', boxShadow: '0 3px 0 rgba(139,90,62,0.2)' }}
+                  style={{ height: 52, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '12px', color: '#6B4423', fontSize: '16px', fontWeight: '700', boxShadow: '0 3px 0 rgba(139,90,62,0.2)' }}
                   autoFocus
                 />
                 <div className="flex gap-3 mt-auto">
@@ -1360,13 +1540,7 @@ For all other messages just reply as plain text.`
                     style={{ height: 48, background: 'rgba(255,252,248,0.95)', borderRadius: '12px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '12px', fontWeight: '700', boxShadow: '0 3px 0 rgba(139,90,62,0.2)' }}
                   >BACK</button>
                   <button
-                    onClick={() => {
-                      if (!customExerciseName.trim()) return
-                      setSelectedExercise(customExerciseName.trim())
-                      setShowExerciseSelection(false)
-                      setCustomExerciseMode(false)
-                      setCustomExerciseName('')
-                    }}
+                    onClick={() => startCustomExercise(true)}
                     className="monument-button flex-1"
                     style={{ height: 48, background: customExerciseName.trim() ? 'linear-gradient(135deg,#FF9F66,#FFB88A)' : 'rgba(200,190,180,0.4)', borderRadius: '12px', border: `2px solid ${customExerciseName.trim() ? '#8B5A3E' : 'rgba(139,90,62,0.2)'}`, color: customExerciseName.trim() ? '#6B4423' : '#A0725A', fontSize: '12px', fontWeight: '700', boxShadow: customExerciseName.trim() ? '0 3px 0 rgba(139,90,62,0.25)' : 'none' }}
                   >CONTINUE</button>
@@ -1389,12 +1563,12 @@ For all other messages just reply as plain text.`
                 {/* Divider */}
                 <div className="flex items-center gap-3 flex-shrink-0">
                   <div style={{ flex: 1, height: 1, background: 'rgba(139,90,62,0.2)' }} />
-                  <span className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', letterSpacing: '1px' }}>OR SELECT FROM LIST</span>
+                  <span className="monument-text" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '1px' }}>OR SELECT FROM LIST</span>
                   <div style={{ flex: 1, height: 1, background: 'rgba(139,90,62,0.2)' }} />
                 </div>
 
                 {/* Category grid */}
-                {[...TRAINING_CATEGORIES, { name: 'Rest Day', color: '#9B7FC8', gradient: 'linear-gradient(135deg,#9B7FC8,#B89FDE)', border: '#7A5FA8', shadow: 'rgba(155,127,200,0.3)', exercises: [] as readonly string[] }].map(cat => (
+                {[...TRAINING_CATEGORIES, REST_DAY_CATEGORY].map(cat => (
                   <button
                     key={cat.name}
                     onClick={() => setSelectedWorkoutCategory(cat.name)}
@@ -1402,7 +1576,7 @@ For all other messages just reply as plain text.`
                     style={{ background: cat.gradient, borderRadius: '12px', border: `2px solid ${cat.border}`, boxShadow: `0 4px 0 ${cat.shadow}` }}
                   >
                     <span className="monument-text" style={{ color: '#fff', fontSize: '12px', fontWeight: '700', letterSpacing: '0.5px', textShadow: '0 1px 4px rgba(0,0,0,0.25)', flex: 1, textAlign: 'left' }}>{cat.name}</span>
-                    <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: '9px', fontWeight: '700' }}>
+                    <span style={{ color: 'rgba(255,255,255,0.92)', fontSize: '10px', fontWeight: '700', textShadow: '0 1px 2px rgba(0,0,0,0.25)' }}>
                       {cat.exercises.length > 0 ? `${cat.exercises.length} exercises ›` : '›'}
                     </span>
                   </button>
@@ -1479,7 +1653,7 @@ For all other messages just reply as plain text.`
                   {/* Previously done (not today) */}
                   {histForCat.length > 0 && (
                     <>
-                      <div className="monument-text px-1 pb-0.5 flex-shrink-0" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px', marginTop: todayForCat.length > 0 ? 4 : 0 }}>YOUR PREVIOUS WORKOUTS</div>
+                      <div className="monument-text px-1 pb-0.5 flex-shrink-0" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px', marginTop: todayForCat.length > 0 ? 4 : 0 }}>YOUR PREVIOUS WORKOUTS</div>
                       {histForCat.map(exercise => (
                         <button key={exercise} onClick={() => pick(exercise)} className="monument-button w-full flex items-center gap-3 px-4 py-3 flex-shrink-0"
                           style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '10px', border: `1.5px solid ${borderColor}`, boxShadow: `0 2px 0 ${shadowColor}` }}>
@@ -1494,7 +1668,7 @@ For all other messages just reply as plain text.`
                   {remaining.length > 0 && (
                     <>
                       {(todayForCat.length > 0 || histForCat.length > 0) && (
-                        <div className="monument-text px-1 pb-0.5 flex-shrink-0" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px', marginTop: 4 }}>SUGGESTIONS</div>
+                        <div className="monument-text px-1 pb-0.5 flex-shrink-0" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px', marginTop: 4 }}>SUGGESTIONS</div>
                       )}
                       {remaining.map(exercise => (
                         <button key={exercise} onClick={() => pick(exercise)} className="monument-button w-full flex items-center gap-3 px-4 py-3 flex-shrink-0"
@@ -1511,10 +1685,11 @@ For all other messages just reply as plain text.`
                     <>
                       <button
                         onClick={() => { logRestDay(); setShowExerciseSelection(false); setSelectedWorkoutCategory(null) }}
+                        disabled={restDayLogged}
                         className="monument-button w-full flex items-center justify-center gap-2 py-3 flex-shrink-0"
-                        style={{ background: 'linear-gradient(135deg,#9B7FC8,#B89FDE)', borderRadius: '12px', border: '2px solid #7A5FA8', color: '#fff', fontSize: '11px', fontWeight: '700', boxShadow: '0 4px 0 rgba(155,127,200,0.3)' }}
+                        style={{ background: 'linear-gradient(135deg,#7A5FA8,#9B7FC8)', borderRadius: '12px', border: '2px solid #6A4F98', color: '#fff', fontSize: '11px', fontWeight: '700', boxShadow: '0 4px 0 rgba(155,127,200,0.3)', ...disabledStyle(restDayLogged) }}
                       >
-                        <Moon size={14} strokeWidth={2.5} color="#fff" /> LOG REST DAY ONLY
+                        <Moon aria-hidden="true" size={14} strokeWidth={2.5} color="#fff" /> {restDayLogged ? 'REST DAY LOGGED' : 'LOG REST DAY ONLY'}
                       </button>
                       {histForCat.length === 0 && todayForCat.length === 0 && (
                         <div className="monument-text text-center py-4 flex-shrink-0" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700' }}>
@@ -1546,7 +1721,8 @@ For all other messages just reply as plain text.`
           <div className="fixed inset-0 z-50 flex flex-col justify-end" style={{ background: 'rgba(107,68,35,0.6)', backdropFilter: 'blur(6px)' }} onClick={() => setScanEditingIndex(null)}>
             <div
               className="monument-card w-full flex flex-col"
-              style={{ borderRadius: '20px 20px 0 0', maxHeight: '82vh', padding: '20px 16px 28px' }}
+              role="dialog" aria-modal="true" aria-label={`Edit ${sv.exercise || 'workout'}`}
+              style={{ borderRadius: '20px 20px 0 0', maxHeight: '82dvh', padding: '20px 16px calc(28px + env(safe-area-inset-bottom))' }}
               onClick={e => e.stopPropagation()}
             >
               {/* Drag handle */}
@@ -1557,23 +1733,26 @@ For all other messages just reply as plain text.`
                 <input
                   type="text"
                   value={sv.exercise}
+                  maxLength={MAX_EXERCISE_NAME}
+                  aria-label="Exercise name"
                   onChange={e => update({ exercise: e.target.value })}
-                  className="flex-1 px-3 monument-text"
-                  style={{ background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '10px', color: '#6B4423', fontSize: '13px', fontWeight: '700', height: 40, boxShadow: '0 2px 0 rgba(139,90,62,0.15)' }}
+                  className="flex-1 min-w-0 px-3 monument-text"
+                  style={{ background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '10px', color: '#6B4423', fontSize: '16px', fontWeight: '700', height: 40, boxShadow: '0 2px 0 rgba(139,90,62,0.15)' }}
                 />
-                <button onClick={() => setScanEditingIndex(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}>
-                  <X size={18} strokeWidth={2.5} color="#A0725A" />
+                <button onClick={() => setScanEditingIndex(null)} aria-label="Close editor" style={ICON_BTN}>
+                  <X aria-hidden="true" size={18} strokeWidth={2.5} color="#A0725A" />
                 </button>
               </div>
 
               {/* Type toggle */}
-              <div className="flex gap-2 mb-3 flex-shrink-0">
+              <div className="flex gap-2 mb-3 flex-shrink-0" role="group" aria-label="Tracking type">
                 {(['weights', 'energy'] as const).map(t => (
                   <button
                     key={t}
                     onClick={() => update({ type: t })}
+                    aria-pressed={sv.type === t}
                     className="monument-button flex-1"
-                    style={{ height: 34, background: sv.type === t ? 'linear-gradient(135deg,#FF9F66,#FFB88A)' : 'rgba(255,252,248,0.95)', borderRadius: '9px', border: '2px solid #8B5A3E', color: sv.type === t ? '#6B4423' : '#8B5A3E', fontSize: '10px', fontWeight: '700' }}
+                    style={{ height: 40, background: sv.type === t ? 'linear-gradient(135deg,#FF9F66,#FFB88A)' : 'rgba(255,252,248,0.95)', borderRadius: '9px', border: '2px solid #8B5A3E', color: sv.type === t ? '#6B4423' : '#8B5A3E', fontSize: '10px', fontWeight: '700' }}
                   >
                     {t === 'weights' ? 'WEIGHTS / REPS' : 'ENERGY LEVEL'}
                   </button>
@@ -1581,13 +1760,14 @@ For all other messages just reply as plain text.`
               </div>
 
               {/* Unit toggle */}
-              {sv.type === 'weights' && (
+              {sv.type === 'weights' && !isDistanceUnit(sv.unit) && (
                 <div className="flex items-center justify-end gap-2 mb-3 flex-shrink-0">
-                  <span className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>UNIT</span>
+                  <span className="monument-text" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>UNIT</span>
                   <button
                     onClick={() => update(toggleSetsUnit(sv.sets, sv.unit))}
-                    className="monument-button px-3 py-1"
-                    style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '8px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}
+                    aria-label={`Weight unit: ${unitLabel(sv.unit)}. Tap to switch`}
+                    className="monument-button px-3"
+                    style={{ minHeight: 36, background: 'rgba(255,252,248,0.95)', borderRadius: '8px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}
                   >
                     {unitLabel(sv.unit)}
                   </button>
@@ -1607,9 +1787,10 @@ For all other messages just reply as plain text.`
                               {sv.sets.length > 1 && (
                                 <button
                                   onClick={() => update({ sets: sv.sets.filter((_, si) => si !== i) })}
-                                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}
+                                  aria-label={`Remove set ${i + 1}`}
+                                  style={{ ...ICON_BTN, marginLeft: -10 }}
                                 >
-                                  <X size={14} strokeWidth={2.5} color="#A0725A" />
+                                  <X aria-hidden="true" size={14} strokeWidth={2.5} color="#A0725A" />
                                 </button>
                               )}
                             </div>
@@ -1619,9 +1800,10 @@ For all other messages just reply as plain text.`
                             <input
                               type="text" inputMode="numeric"
                               placeholder="0"
-                              {...arithField(`scan-reps-${i}`, set.reps, n => updateSet(i, { reps: n }), { integer: true })}
+                              aria-label={`Set ${i + 1} reps`}
+                              {...arithField(`scan-reps-${i}`, set.reps, n => updateSet(i, { reps: Math.min(999, n) }), { integer: true })}
                               className="w-full monument-text"
-                              style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '14px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }}
+                              style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '16px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }}
                             />
                           </div>
                           <div>
@@ -1629,9 +1811,10 @@ For all other messages just reply as plain text.`
                             <input
                               type="text" inputMode="decimal"
                               placeholder="0"
-                              {...arithField(`scan-weight-${i}`, set.weight, n => updateSet(i, { weight: n }))}
+                              aria-label={`Set ${i + 1} ${unitLabel(sv.unit) || 'weight'}`}
+                              {...arithField(`scan-weight-${i}`, set.weight, n => updateSet(i, { weight: Math.min(1000, n) }))}
                               className="w-full monument-text"
-                              style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '14px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }}
+                              style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '16px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }}
                             />
                           </div>
                         </div>
@@ -1657,9 +1840,10 @@ For all other messages just reply as plain text.`
                               {sv.sets.length > 1 && (
                                 <button
                                   onClick={() => update({ sets: sv.sets.filter((_, si) => si !== i) })}
-                                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}
+                                  aria-label={`Remove set ${i + 1}`}
+                                  style={{ ...ICON_BTN, marginLeft: -10 }}
                                 >
-                                  <X size={14} strokeWidth={2.5} color="#A0725A" />
+                                  <X aria-hidden="true" size={14} strokeWidth={2.5} color="#A0725A" />
                                 </button>
                               )}
                             </div>
@@ -1670,10 +1854,11 @@ For all other messages just reply as plain text.`
                               type="number" inputMode="numeric" min={0}
                               placeholder="0"
                               value={set.reps === 0 ? '' : set.reps}
-                              onChange={e => updateSet(i, { reps: Math.max(0, parseInt(e.target.value) || 0) })}
+                              aria-label={`Set ${i + 1} reps`}
+                              onChange={e => updateSet(i, { reps: Math.min(999, Math.max(0, parseInt(e.target.value) || 0)) })}
                               onFocus={e => e.target.select()}
                               className="w-full monument-text"
-                              style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '14px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }}
+                              style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '16px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }}
                             />
                           </div>
                           <div>
@@ -1682,10 +1867,11 @@ For all other messages just reply as plain text.`
                               type="number" inputMode="numeric" min={1} max={5}
                               placeholder="1–5"
                               value={set.weight === 0 ? '' : set.weight}
+                              aria-label={`Set ${i + 1} energy (1 to 5)`}
                               onChange={e => updateSet(i, { weight: Math.min(5, Math.max(1, parseInt(e.target.value) || 1)) })}
                               onFocus={e => e.target.select()}
                               className="w-full monument-text"
-                              style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '14px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }}
+                              style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '16px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }}
                             />
                           </div>
                         </div>
@@ -1713,10 +1899,11 @@ For all other messages just reply as plain text.`
                 </button>
                 <button
                   onClick={() => handleLogOne(idx)}
+                  disabled={scanBusy || !isLoggableScan(sv)}
                   className="monument-button"
-                  style={{ flex: 2, height: 46, background: 'linear-gradient(135deg,#FF9F66,#FFB88A)', borderRadius: '12px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '11px', fontWeight: '700', boxShadow: '0 3px 0 rgba(139,90,62,0.25)' }}
+                  style={{ flex: 2, height: 46, background: 'linear-gradient(135deg,#FF9F66,#FFB88A)', borderRadius: '12px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '11px', fontWeight: '700', boxShadow: '0 3px 0 rgba(139,90,62,0.25)', ...disabledStyle(scanBusy || !isLoggableScan(sv)) }}
                 >
-                  ✓ LOG THIS
+                  {savingScan ? 'SAVING…' : '✓ LOG THIS'}
                 </button>
               </div>
             </div>
@@ -1724,13 +1911,22 @@ For all other messages just reply as plain text.`
         )
       })()}
 
+      {/* Status toast — save failures, mic problems */}
+      {toast && !(aiPerfLoading || aiPerf) && (
+        <div role="alert" onClick={() => { clearSaveError(); setNotice(null) }}
+          className="fixed z-[60] left-1/2 monument-text px-4 py-2.5"
+          style={{ top: 72, transform: 'translateX(-50%)', width: 'min(calc(100vw - 32px), 400px)', background: 'rgba(255,252,248,0.98)', border: '2px solid #C04040', borderRadius: '12px', color: '#8B3A2E', fontSize: '11px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.2)' }}>
+          {toast}
+        </div>
+      )}
+
       {/* Floating save button */}
       {isDirty && (
         <button
           onClick={saveWorkout}
           className="fixed z-50 monument-button flex items-center gap-1.5 px-3 py-2"
           style={{
-            bottom: '96px',
+            bottom: 'calc(6rem + env(safe-area-inset-bottom))',
             left: '24px',
             background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)',
             borderRadius: '20px',
@@ -1749,65 +1945,58 @@ For all other messages just reply as plain text.`
 
       {/* Hidden file inputs */}
       <input ref={fileInputRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handleFileSelected} />
-      <input ref={filesInputRef} type="file" accept="image/*,application/pdf,text/*" style={{ display: 'none' }} onChange={handleFileSelected} />
+      {/* The scan pipeline only understands images */}
+      <input ref={filesInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFileSelected} />
 
       {/* Drop-up media menu */}
       {showMediaMenu && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => { if (!micReady && !micRecording && !textMode && !coachMode) setShowMediaMenu(false) }} />
-          <div className="fixed z-50 flex flex-col gap-2 items-end" style={{ bottom: '176px', right: '16px' }}>
+          <div className="fixed z-50 flex flex-col gap-2 items-end" style={{ bottom: 'calc(176px + env(safe-area-inset-bottom))', right: '16px' }}>
 
             {coachMode ? (
               /* AI Companion panel */
-              <div className="monument-card flex flex-col" style={{ width: 'min(calc(100vw - 32px), 360px)', height: '420px' }} onClick={e => e.stopPropagation()}>
-                <div className="flex justify-between items-center p-4 border-b-2" style={{ borderColor: '#8B5A3E' }}>
+              <div className="monument-card flex flex-col" role="dialog" aria-label="AI Companion" style={{ width: 'min(calc(100vw - 32px), 360px)', height: 'min(420px, calc(100vh - 240px))', maxHeight: 'calc(100dvh - 240px)' }} onClick={e => e.stopPropagation()}>
+                <div className="flex justify-between items-center p-4 border-b-2 flex-shrink-0" style={{ borderColor: '#8B5A3E' }}>
                   <div className="flex items-center gap-3">
                     <div className="p-2 cozy-glow" style={{ background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '50%', border: '2px solid #8B5A3E' }}>
                       <MessageCircle size={18} strokeWidth={2.5} color="#6B4423" />
                     </div>
                     <div>
                       <div className="monument-text" style={{ color: '#6B4423', fontSize: '13px', fontWeight: '700' }}>AI Companion</div>
-                      <div className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>Always here to help!</div>
+                      <div className="monument-text" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>Always here to help!</div>
                     </div>
                   </div>
-                  <button onClick={() => setCoachMode(false)} className="monument-button" style={{ background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '18px', fontWeight: '700', lineHeight: '1', width: '32px', height: '32px' }}>×</button>
+                  <button onClick={() => setCoachMode(false)} aria-label="Close AI companion" className="monument-button" style={{ background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '18px', fontWeight: '700', lineHeight: '1', width: '40px', height: '40px' }}>×</button>
                 </div>
-                <div className="flex-1 overflow-y-auto p-4 space-y-3" style={{ background: 'rgba(255, 252, 248, 0.3)' }}>
+                <div className="flex-1 overflow-y-auto p-4 space-y-3" style={{ background: 'rgba(255, 252, 248, 0.3)', minHeight: 0 }} aria-live="polite" aria-relevant="additions">
                   {coachMessages.map((msg, i) => (
                     <div key={i} className={`flex ${msg.isUser ? 'justify-end' : 'justify-start'}`}>
-                      <div className="max-w-[80%]">
+                      <div className="max-w-[80%] min-w-0">
                         <div className="monument-card px-4 py-3" style={{ background: msg.isUser ? 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)' : 'rgba(255, 252, 248, 0.95)', border: `2px solid ${msg.isUser ? '#8B5A3E' : '#A0725A'}`, boxShadow: msg.isUser ? '0 4px 0 rgba(139, 90, 62, 0.25)' : '0 2px 0 rgba(160, 114, 90, 0.2)' }}>
-                          <div className="monument-text" style={{ color: msg.isUser ? '#6B4423' : '#8B5A3E', fontSize: '11px', fontWeight: '700', lineHeight: '1.6' }}>{msg.text}</div>
+                          <div className="monument-text" style={{ color: msg.isUser ? '#6B4423' : '#8B5A3E', fontSize: '11px', fontWeight: '700', lineHeight: '1.6', overflowWrap: 'anywhere' }}>{msg.text}</div>
                         </div>
                         {msg.workouts && msg.workouts.length > 0 && (
                           <div className="mt-1.5 space-y-1.5">
-                            {msg.workouts.map((w, wi) => (
+                            {msg.workouts.map((w, wi) => {
+                              const key = `${i}-${wi}`
+                              const logged = loggedCoachCards.has(key)
+                              const off = logged || !isLoggableScan(w)
+                              return (
                               <div key={wi} className="px-3 py-2" style={{ background: 'rgba(255,159,102,0.08)', border: '1.5px solid rgba(255,159,102,0.3)', borderRadius: '10px' }}>
-                                <div className="monument-text mb-0.5" style={{ color: '#FF9F66', fontSize: '10px', fontWeight: '700' }}>{w.exercise}</div>
-                                <div className="monument-text mb-2" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>
-                                  {w.type === 'weights'
-                                    ? `${w.sets.length} sets · ${w.sets[0]?.reps} reps${w.sets[0]?.weight ? ` × ${w.sets[0].weight}${w.unit ? ' ' + w.unit : ''}` : ''}`
-                                    : `Energy: ${w.energyRating}/5`}
-                                </div>
+                                <div className="monument-text mb-0.5 truncate" style={{ color: '#B8581F', fontSize: '11px', fontWeight: '700' }}>{w.exercise}</div>
+                                <div className="monument-text mb-2" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>{describeScan(w)}</div>
                                 <button
-                                  onClick={() => {
-                                    const entry: WorkoutEntry = {
-                                      exercise: w.exercise,
-                                      type: w.type,
-                                      time: new Date().toLocaleTimeString(),
-                                      ...(w.type === 'energy' ? { energyRating: w.energyRating } : { sets: w.sets, unit: w.unit }),
-                                    }
-                                    logWorkoutDirect(entry)
-                                    setCoachMessages(prev => [...prev, { text: `✓ Logged ${w.exercise}`, isUser: false }])
-                                    setTimeout(() => coachEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
-                                  }}
-                                  className="monument-button w-full py-1.5"
-                                  style={{ background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '8px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '10px', fontWeight: '700', boxShadow: '0 2px 0 rgba(139,90,62,0.25)' }}
+                                  onClick={() => logCoachCard(key, w)}
+                                  disabled={off}
+                                  className="monument-button w-full"
+                                  style={{ minHeight: 36, background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '8px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '10px', fontWeight: '700', boxShadow: '0 2px 0 rgba(139,90,62,0.25)', ...disabledStyle(off) }}
                                 >
-                                  ✓ LOG THIS
+                                  {logged ? '✓ LOGGED' : '✓ LOG THIS'}
                                 </button>
                               </div>
-                            ))}
+                              )
+                            })}
                           </div>
                         )}
                       </div>
@@ -1815,27 +2004,29 @@ For all other messages just reply as plain text.`
                   ))}
                   {coachThinking && (
                     <div className="flex justify-start">
-                      <div className="monument-card px-4 py-3" style={{ background: 'rgba(255, 252, 248, 0.95)', border: '2px solid #A0725A', boxShadow: '0 2px 0 rgba(160, 114, 90, 0.2)' }}>
+                      <div className="monument-card px-4 py-3" role="status" style={{ background: 'rgba(255, 252, 248, 0.95)', border: '2px solid #A0725A', boxShadow: '0 2px 0 rgba(160, 114, 90, 0.2)' }}>
                         <div className="monument-text soft-pulse" style={{ color: '#A0725A', fontSize: '11px', fontWeight: '700' }}>thinking...</div>
                       </div>
                     </div>
                   )}
                   <div ref={coachEndRef} />
                 </div>
-                <div className="p-4 border-t-2" style={{ borderColor: '#8B5A3E' }}>
+                <div className="p-4 border-t-2 flex-shrink-0" style={{ borderColor: '#8B5A3E' }}>
                   <div className="flex gap-2">
                     <input
                       type="text"
                       value={coachInput}
                       onChange={e => setCoachInput(e.target.value)}
-                      onKeyDown={e => e.key === 'Enter' && !coachThinking && handleCoachSend()}
+                      onKeyDown={e => e.key === 'Enter' && handleCoachSend()}
+                      maxLength={MAX_COACH_INPUT}
+                      aria-label="Message the AI companion"
                       placeholder="Type a message..."
                       autoFocus
-                      className="flex-1 px-4 py-3 monument-text"
-                      style={{ background: 'rgba(255, 252, 248, 0.95)', border: '2px solid #8B5A3E', borderRadius: '12px', color: '#6B4423', fontSize: '12px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)', outline: 'none' }}
+                      className="flex-1 min-w-0 px-4 py-3 monument-text"
+                      style={{ background: 'rgba(255, 252, 248, 0.95)', border: '2px solid #8B5A3E', borderRadius: '12px', color: '#6B4423', fontSize: '16px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139, 90, 62, 0.25)', outline: 'none' }}
                     />
-                    <button onClick={handleCoachSend} disabled={coachThinking} className="monument-button p-3 cozy-glow" style={{ background: coachThinking ? 'rgba(255, 184, 138, 0.4)' : 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '12px', border: '3px solid #8B5A3E', boxShadow: '0 0 20px rgba(255, 184, 138, 0.15), 0 4px 0 rgba(139, 90, 62, 0.25)' }}>
-                      <Send size={20} strokeWidth={2.5} color="#6B4423" />
+                    <button onClick={handleCoachSend} disabled={coachThinking} aria-label="Send message" className="monument-button p-3 cozy-glow" style={{ background: coachThinking ? 'rgba(255, 184, 138, 0.4)' : 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '12px', border: '3px solid #8B5A3E', boxShadow: '0 0 20px rgba(255, 184, 138, 0.15), 0 4px 0 rgba(139, 90, 62, 0.25)' }}>
+                      <Send aria-hidden="true" size={20} strokeWidth={2.5} color="#6B4423" />
                     </button>
                   </div>
                 </div>
@@ -1843,7 +2034,7 @@ For all other messages just reply as plain text.`
             ) : textMode ? (
               /* Text input mode */
               <div
-                className="flex items-center gap-2 px-3 py-2.5 monument-button"
+                className="flex items-center gap-2 pl-3 pr-1 py-1.5 monument-button"
                 style={{ background: 'rgba(255,252,248,0.97)', borderRadius: '14px', border: '2px solid #8B5A3E', boxShadow: '0 4px 0 rgba(139,90,62,0.25)', backdropFilter: 'blur(8px)', minWidth: '260px' }}
               >
                 <input
@@ -1851,11 +2042,13 @@ For all other messages just reply as plain text.`
                   type="text"
                   placeholder="e.g. 6x30m / 3 mins rest"
                   value={textInput}
+                  maxLength={MAX_COACH_INPUT}
+                  aria-label="Describe your workout"
                   onChange={e => setTextInput(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleTextSubmit()}
                   autoFocus
-                  className="flex-1 monument-text"
-                  style={{ background: 'none', border: 'none', outline: 'none', color: '#6B4423', fontSize: '11px', fontWeight: '700' }}
+                  className="flex-1 min-w-0 monument-text"
+                  style={{ background: 'none', border: 'none', outline: 'none', color: '#6B4423', fontSize: '16px', fontWeight: '700' }}
                 />
                 <button
                   onClick={handleTextSubmit}
@@ -1864,20 +2057,20 @@ For all other messages just reply as plain text.`
                 >
                   LOG
                 </button>
-                <button onClick={() => { setTextMode(false); setTextInput('') }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px' }}>
-                  <X size={14} strokeWidth={2.5} color="#A0725A" />
+                <button onClick={() => { setTextMode(false); setTextInput('') }} aria-label="Cancel text entry" style={ICON_BTN}>
+                  <X aria-hidden="true" size={14} strokeWidth={2.5} color="#A0725A" />
                 </button>
               </div>
             ) : (micReady || micRecording) ? (
               /* Mic mode */
               <div
-                className="flex items-center gap-3 px-4 py-3 monument-button"
+                className="flex items-center gap-3 pl-4 pr-1 py-1.5 monument-button"
                 style={{ background: 'rgba(255,252,248,0.97)', borderRadius: '14px', border: '2px solid #8B5A3E', boxShadow: '0 4px 0 rgba(139,90,62,0.25)', backdropFilter: 'blur(8px)' }}
               >
                 {micRecording && (
                   <div className="soft-pulse" style={{ width: 8, height: 8, borderRadius: '50%', background: '#E05A4E', flexShrink: 0 }} />
                 )}
-                <span className="monument-text" style={{ color: '#6B4423', fontSize: '11px', fontWeight: '700' }}>
+                <span className="monument-text" role="status" style={{ color: '#6B4423', fontSize: '11px', fontWeight: '700' }}>
                   {micRecording ? 'Recording...' : 'Tap to start'}
                 </span>
                 {micReady && !micRecording && (
@@ -1886,8 +2079,8 @@ For all other messages just reply as plain text.`
                 {micRecording && (
                   <button onClick={stopMicRecording} className="monument-button px-4 py-1.5" style={{ background: '#E05A4E', borderRadius: '10px', border: '2px solid #C04040', color: '#fff', fontSize: '10px', fontWeight: '700', boxShadow: '0 2px 0 rgba(180,40,40,0.3)' }}>STOP</button>
                 )}
-                <button onClick={cancelMic} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px' }}>
-                  <X size={14} strokeWidth={2.5} color="#A0725A" />
+                <button onClick={cancelMic} aria-label="Cancel recording" style={ICON_BTN}>
+                  <X aria-hidden="true" size={14} strokeWidth={2.5} color="#A0725A" />
                 </button>
               </div>
             ) : (
@@ -1906,7 +2099,7 @@ For all other messages just reply as plain text.`
                     style={{ background: 'rgba(255,252,248,0.97)', borderRadius: '14px', border: '2px solid #8B5A3E', boxShadow: '0 4px 0 rgba(139,90,62,0.25)', backdropFilter: 'blur(8px)' }}
                   >
                     <span className="monument-text" style={{ color: '#6B4423', fontSize: '11px', fontWeight: '700' }}>{label}</span>
-                    <div className="p-1.5 flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '8px', border: '2px solid #8B5A3E', width: '28px', height: '28px' }}>
+                    <div className="p-1.5 flex items-center justify-center" aria-hidden="true" style={{ background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)', borderRadius: '8px', border: '2px solid #8B5A3E', width: '28px', height: '28px' }}>
                       {Icon ? <Icon size={16} strokeWidth={2.5} color="#6B4423" /> : <MessageCircle size={14} strokeWidth={2.5} color="#6B4423" />}
                     </div>
                   </button>
@@ -1920,6 +2113,8 @@ For all other messages just reply as plain text.`
       {/* Floating Arrow FAB */}
       <button
         onClick={() => setShowMediaMenu(v => !v)}
+        aria-label={showMediaMenu ? 'Close log menu' : 'Open log menu'}
+        aria-expanded={showMediaMenu}
         className="fixed right-6 p-3 soft-pulse monument-button"
         style={{
           bottom: 'calc(6rem + env(safe-area-inset-bottom))',
@@ -1932,7 +2127,7 @@ For all other messages just reply as plain text.`
           transition: 'transform 0.2s ease',
         }}
       >
-        <ChevronUp size={24} strokeWidth={2.5} color="#6B4423" />
+        <ChevronUp aria-hidden="true" size={24} strokeWidth={2.5} color="#6B4423" />
       </button>
     </div>
   )

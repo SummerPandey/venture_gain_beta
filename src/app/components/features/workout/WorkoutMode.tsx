@@ -1,11 +1,12 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { Dumbbell, X, Moon, Calendar, ChevronLeft } from 'lucide-react'
 import { useHealthData } from '@/contexts/HealthDataContext'
 import { TRAINING_CATEGORIES, REST_DAY_CATEGORY } from '@/constants/trainingCategories'
 import { WorkoutMediaFAB } from './WorkoutMediaFAB'
 import { getToday } from '@/lib/supabase'
 import type { DayLog } from '@/hooks/useWorkout'
-import { toKgValue, unitLabel } from '@/lib/units'
+import { toKgValue, unitLabel, toggleKgLbs } from '@/lib/units'
+import { entryVolumeKg, fmtWeight, MAX_EXERCISE_NAME, cleanExerciseName } from './workoutScan'
 
 const BTN_BASE = {
   background: 'linear-gradient(135deg, #FF9F66 0%, #FFB88A 100%)',
@@ -22,8 +23,11 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
     selectedExercise, setSelectedExercise,
     trackingMode, setTrackingMode,
     energyRating, setEnergyRating,
-    sets, addSet, updateSet,
-    logWorkout, logRestDay, logWorkoutDirect, removeWorkout,
+    sets, addSet, removeSet, updateSet, discardExercise,
+    unit, setUnit,
+    scheduledCategories,
+    logWorkout, logRestDay, restDayLogged, logWorkoutDirect, logWorkoutBatch, removeWorkout,
+    saveError, clearSaveError,
   } = useHealthData().workout
 
   // ── Exercise selection modal ──
@@ -34,6 +38,8 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
   const [customExerciseName, setCustomExerciseName] = useState('')
 
   const [browseCategory, setBrowseCategory] = useState<string | null>(null)
+  // Switching Today/Previous starts each view fresh instead of resuming a drill-down
+  useEffect(() => { setBrowseCategory(null) }, [currentView])
 
   // Effective category for a workout in a given day: its own stored category
   // (explicit pick) wins; otherwise it inherits the single category the user
@@ -57,6 +63,38 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
     setCustomExerciseName('')
   }
 
+  /** Custom exercises carry no category — never inherit the previous pick's. */
+  const startCustomExercise = () => {
+    const name = cleanExerciseName(customExerciseName)
+    if (!name) return
+    setSelectedExercise(name)
+    setActiveLogCategory(undefined)
+    closeExerciseModal()
+  }
+
+  /** Close the logging modal; confirm first if sets were typed so the work isn't silently lost. */
+  const closeLoggingModal = () => {
+    const typed = trackingMode === 'weights' && sets.some(s => s.reps > 0 || s.weight > 0)
+    if (typed && !window.confirm('Discard this exercise? The sets you entered will be lost.')) return
+    discardExercise()
+  }
+
+  const confirmRemove = (i: number, name: string) => {
+    if (window.confirm(`Remove ${name} from today?`)) removeWorkout(i)
+  }
+
+  // Escape closes the topmost dialog
+  useEffect(() => {
+    if (!selectedExercise && !showExerciseSelection) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || (e.target as HTMLElement | null)?.tagName === 'INPUT') return
+      if (selectedExercise) closeLoggingModal()
+      else closeExerciseModal()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
   const pickExercise = (exercise: string, category: string) => {
     setSelectedExercise(exercise)
     setActiveLogCategory(category)
@@ -65,14 +103,14 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
 
   // ─────────────── TODAY VIEW ───────────────
   const todayView = (
-    <div className="p-6 max-w-md mx-auto">
+    <div className="p-6 pb-32 max-w-md mx-auto">
       <h2 className="monument-text mb-5 text-center" style={{ color: '#6B4423', fontSize: '18px', fontWeight: '700' }}>
         Today's Session
       </h2>
 
       {/* ADD EXERCISE button */}
       <button
-        onClick={() => { setShowExerciseSelection(true); setSelectedWorkoutCategory(null); setCustomExerciseMode(false); setCustomExerciseName('') }}
+        onClick={() => { setShowExerciseSelection(true); setSelectedWorkoutCategory(null); setActiveLogCategory(undefined); setCustomExerciseMode(false); setCustomExerciseName('') }}
         className="monument-button w-full py-4 mb-5"
         style={{ ...BTN_BASE, color: '#6B4423', fontSize: '14px', fontWeight: '700', letterSpacing: '0.5px' }}
       >
@@ -98,9 +136,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
             const i = todayWorkouts.length - 1 - ri
             const cat = TRAINING_CATEGORIES.find(c => w.category === c.name)
             const accentColor = cat?.color ?? '#FF9F66'
-            const totalVol = w.type === 'weights' && w.sets && w.unit !== 'km'
-              ? w.sets.reduce((s, set) => s + set.reps * toKgValue(set.weight, w.unit), 0)
-              : 0
+            const totalVol = Math.round(entryVolumeKg(w, toKgValue))
 
             return (
               <div
@@ -115,7 +151,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
                   {/* Header row */}
                   <div className="flex items-start justify-between mb-2">
                     <div className="flex-1 min-w-0">
-                      <div className="monument-text" style={{ color: '#6B4423', fontSize: '13px', fontWeight: '800', letterSpacing: '0.3px', textTransform: 'uppercase' }}>
+                      <div className="monument-text" style={{ color: '#6B4423', fontSize: '13px', fontWeight: '800', letterSpacing: '0.3px', textTransform: 'uppercase', overflowWrap: 'anywhere' }}>
                         {w.exercise}
                       </div>
                       {cat && (
@@ -128,11 +164,12 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
                       )}
                     </div>
                     <button
-                      onClick={() => removeWorkout(i)}
-                      className="flex-shrink-0 ml-2"
-                      style={{ background: 'rgba(220,80,60,0.08)', border: '1.5px solid rgba(220,80,60,0.2)', borderRadius: '8px', padding: '4px 6px', cursor: 'pointer' }}
+                      onClick={() => confirmRemove(i, w.exercise)}
+                      aria-label={`Remove ${w.exercise}`}
+                      className="flex-shrink-0 ml-2 flex items-center justify-center"
+                      style={{ background: 'rgba(220,80,60,0.08)', border: '1.5px solid rgba(220,80,60,0.2)', borderRadius: '10px', width: 40, height: 40, margin: '-6px -6px 0 8px', cursor: 'pointer' }}
                     >
-                      <X size={12} strokeWidth={2.5} color="#E05A4E" />
+                      <X aria-hidden="true" size={14} strokeWidth={2.5} color="#E05A4E" />
                     </button>
                   </div>
 
@@ -145,7 +182,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
                           className="monument-text px-2 py-1"
                           style={{ background: `${accentColor}15`, border: `1px solid ${accentColor}40`, borderRadius: '8px', color: '#6B4423', fontSize: '10px', fontWeight: '700' }}
                         >
-                          {s.reps}<span style={{ color: '#A0725A', fontWeight: '600' }}>r</span> × {s.weight}<span style={{ color: '#A0725A', fontWeight: '600' }}>{unitLabel(w.unit).toLowerCase()}</span>
+                          {s.reps}<span style={{ color: '#A0725A', fontWeight: '600' }}>r</span> × {fmtWeight(s.weight)}<span style={{ color: '#A0725A', fontWeight: '600' }}>{unitLabel(w.unit).toLowerCase()}</span>
                         </span>
                       ))}
                     </div>
@@ -154,7 +191,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
                   {/* Energy rating dots */}
                   {w.energyRating != null && w.energyRating > 0 && (
                     <div className="flex items-center gap-1.5 mb-1">
-                      <span className="monument-text" style={{ color: '#A0725A', fontSize: '8px', fontWeight: '700', letterSpacing: '0.5px' }}>ENERGY</span>
+                      <span className="monument-text" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px' }}>ENERGY</span>
                       <div className="flex gap-1">
                         {[1,2,3,4,5].map(n => (
                           <div key={n} style={{
@@ -170,7 +207,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
                   {/* Volume summary */}
                   {totalVol > 0 && (
                     <div className="mt-2 pt-2" style={{ borderTop: `1px solid ${accentColor}18` }}>
-                      <span className="monument-text" style={{ color: '#A0725A', fontSize: '8px', fontWeight: '700', letterSpacing: '0.5px' }}>
+                      <span className="monument-text" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px' }}>
                         VOLUME · <span style={{ color: accentColor }}>{totalVol.toLocaleString()} kg</span>
                         {'  '}·{'  '}{w.sets!.length} SET{w.sets!.length !== 1 ? 'S' : ''}
                       </span>
@@ -190,7 +227,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
 
   const previousView = browseCategory === null ? (
     // ── Step 1: Category picker ──
-    <div className="p-5 max-w-md mx-auto">
+    <div className="p-5 pb-32 max-w-md mx-auto">
       <h2 className="monument-text mb-5 text-center" style={{ color: '#6B4423', fontSize: '18px', fontWeight: '700' }}>
         Workout History
       </h2>
@@ -221,7 +258,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
               <span className="monument-text flex-1 text-left" style={{ color: '#fff', fontSize: '14px', fontWeight: '700', textShadow: '0 1px 4px rgba(0,0,0,0.2)' }}>
                 {cat.name}
               </span>
-              <span className="monument-text" style={{ color: 'rgba(255,255,255,0.8)', fontSize: '11px', fontWeight: '700' }}>
+              <span className="monument-text" style={{ color: 'rgba(255,255,255,0.95)', fontSize: '11px', fontWeight: '700', textShadow: '0 1px 3px rgba(0,0,0,0.25)' }}>
                 {dayCount} {dayCount === 1 ? 'session' : 'sessions'} ›
               </span>
             </button>
@@ -231,15 +268,16 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
     </div>
   ) : (
     // ── Step 2: Sessions for selected category ──
-    <div className="p-5 max-w-md mx-auto">
+    <div className="p-5 pb-32 max-w-md mx-auto">
       {/* Back + title */}
       <div className="flex items-center gap-3 mb-5">
         <button
           onClick={() => setBrowseCategory(null)}
+          aria-label="Back to categories"
           className="monument-button flex items-center justify-center"
-          style={{ ...BTN_BASE, width: 36, height: 36, flexShrink: 0 }}
+          style={{ ...BTN_BASE, width: 40, height: 40, flexShrink: 0 }}
         >
-          <ChevronLeft size={18} strokeWidth={2.5} color="#6B4423" />
+          <ChevronLeft aria-hidden="true" size={18} strokeWidth={2.5} color="#6B4423" />
         </button>
         <h2 className="monument-text" style={{ color: '#6B4423', fontSize: '18px', fontWeight: '700' }}>
           {browseCategory}
@@ -272,18 +310,18 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
                 {/* Date header */}
                 <div className="flex items-center gap-3 px-4 py-3" style={{ background: `${color}10`, borderBottom: `1px solid ${color}20` }}>
                   <div style={{
-                    width: 38, height: 38, borderRadius: '10px', flexShrink: 0,
+                    width: 42, height: 42, borderRadius: '10px', flexShrink: 0,
                     background: gradient, border: `2px solid ${color}`,
                     display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                   }}>
-                    <span className="monument-text" style={{ fontSize: '7px', fontWeight: '700', color: '#fff', letterSpacing: '0.3px' }}>{dayName.toUpperCase()}</span>
+                    <span className="monument-text" style={{ fontSize: '9px', fontWeight: '700', color: '#fff', letterSpacing: '0.3px', lineHeight: 1.1 }}>{dayName.toUpperCase()}</span>
                     <span className="monument-text" style={{ fontSize: '13px', fontWeight: '800', color: '#fff', lineHeight: 1 }}>{parseInt(dd)}</span>
                   </div>
                   <div>
                     <span className="monument-text" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>
                       {isToday ? 'Today' : `${dayName} ${parseInt(mm)}/${parseInt(dd)}`}
                     </span>
-                    <div className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700' }}>
+                    <div className="monument-text" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>
                       {exercises.length} exercise{exercises.length !== 1 ? 's' : ''}
                     </div>
                   </div>
@@ -292,25 +330,24 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
                 {/* Exercises */}
                 <div className="p-3 flex flex-col gap-2">
                   {exercises.map((w, wi) => {
-                    const totalVol = w.type === 'weights' && w.sets && w.unit !== 'km'
-                      ? w.sets.reduce((s, set) => s + set.reps * toKgValue(set.weight, w.unit), 0) : 0
+                    const totalVol = Math.round(entryVolumeKg(w, toKgValue))
                     return (
                       <div key={wi} style={{ background: `${color}08`, borderRadius: '10px', border: `1px solid ${color}20`, padding: '10px 12px' }}>
-                        <div className="monument-text mb-1" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '800', textTransform: 'uppercase' }}>
+                        <div className="monument-text mb-1" style={{ color: '#6B4423', fontSize: '12px', fontWeight: '800', textTransform: 'uppercase', overflowWrap: 'anywhere' }}>
                           {w.exercise}
                         </div>
                         {w.type === 'weights' && w.sets && w.sets.length > 0 && (
                           <div className="flex flex-wrap gap-1 mt-1">
                             {w.sets.map((s, si) => (
                               <span key={si} className="monument-text px-2 py-0.5" style={{ background: `${color}15`, border: `1px solid ${color}30`, borderRadius: '6px', color: '#6B4423', fontSize: '9px', fontWeight: '700' }}>
-                                {s.reps}r × {s.weight}{unitLabel(w.unit).toLowerCase()}
+                                {s.reps}r × {fmtWeight(s.weight)}{unitLabel(w.unit).toLowerCase()}
                               </span>
                             ))}
                           </div>
                         )}
                         {w.energyRating != null && w.energyRating > 0 && (
                           <div className="flex items-center gap-1.5 mt-1.5">
-                            <span className="monument-text" style={{ color: '#A0725A', fontSize: '8px', fontWeight: '700' }}>ENERGY</span>
+                            <span className="monument-text" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700' }}>ENERGY</span>
                             <div className="flex gap-1">
                               {[1,2,3,4,5].map(n => (
                                 <div key={n} style={{ width: 7, height: 7, borderRadius: '50%', background: n <= (w.energyRating ?? 0) ? color : `${color}22` }} />
@@ -320,7 +357,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
                         )}
                         {totalVol > 0 && (
                           <div className="mt-1.5 pt-1.5" style={{ borderTop: `1px solid ${color}15` }}>
-                            <span className="monument-text" style={{ color: '#A0725A', fontSize: '8px', fontWeight: '700' }}>
+                            <span className="monument-text" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700' }}>
                               VOL · <span style={{ color }}>{totalVol.toLocaleString()} kg</span>
                               {'  '}·{'  '}{w.sets!.length} SET{w.sets!.length !== 1 ? 'S' : ''}
                             </span>
@@ -345,7 +382,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
       style={{ background: 'rgba(107, 68, 35, 0.7)', backdropFilter: 'blur(8px)' }}
       onClick={closeExerciseModal}
     >
-      <div className="monument-card p-6 max-w-md w-full max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="monument-card p-6 max-w-md w-full max-h-[80vh] flex flex-col" role="dialog" aria-modal="true" aria-label="Select exercise" onClick={e => e.stopPropagation()}>
 
         {/* Header */}
         <div className="flex justify-between items-center mb-5 flex-shrink-0">
@@ -353,10 +390,11 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
             {(selectedWorkoutCategory || customExerciseMode) && (
               <button
                 onClick={() => { setSelectedWorkoutCategory(null); setCustomExerciseMode(false); setCustomExerciseName('') }}
-                className="monument-button p-1.5"
-                style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '8px', border: '2px solid #8B5A3E', boxShadow: '0 2px 0 rgba(139,90,62,0.2)' }}
+                aria-label="Back"
+                className="monument-button flex items-center justify-center"
+                style={{ width: 40, height: 40, background: 'rgba(255,252,248,0.95)', borderRadius: '8px', border: '2px solid #8B5A3E', boxShadow: '0 2px 0 rgba(139,90,62,0.2)' }}
               >
-                <span style={{ color: '#8B5A3E', fontSize: '14px', fontWeight: '700', lineHeight: 1 }}>‹</span>
+                <span aria-hidden="true" style={{ color: '#8B5A3E', fontSize: '14px', fontWeight: '700', lineHeight: 1 }}>‹</span>
               </button>
             )}
             <div className="monument-text" style={{ color: '#6B4423', fontSize: '13px', fontWeight: '700' }}>
@@ -365,8 +403,9 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
           </div>
           <button
             onClick={closeExerciseModal}
+            aria-label="Close"
             className="monument-button"
-            style={{ ...BTN_BASE, color: '#6B4423', fontSize: '16px', fontWeight: '700', width: '36px', height: '36px' }}
+            style={{ ...BTN_BASE, color: '#6B4423', fontSize: '16px', fontWeight: '700', width: '40px', height: '40px' }}
           >×</button>
         </div>
 
@@ -378,21 +417,18 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
               type="text"
               placeholder="Enter exercise name..."
               value={customExerciseName}
+              maxLength={MAX_EXERCISE_NAME}
+              aria-label="Exercise name"
               onChange={e => setCustomExerciseName(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && customExerciseName.trim()) {
-                  setSelectedExercise(customExerciseName.trim())
-                  closeExerciseModal()
-                }
-              }}
+              onKeyDown={e => { if (e.key === 'Enter') startCustomExercise() }}
               className="w-full px-4 monument-text mb-6"
-              style={{ height: 52, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '12px', color: '#6B4423', fontSize: '14px', fontWeight: '700', boxShadow: '0 3px 0 rgba(139,90,62,0.2)' }}
+              style={{ height: 52, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '12px', color: '#6B4423', fontSize: '16px', fontWeight: '700', boxShadow: '0 3px 0 rgba(139,90,62,0.2)' }}
               autoFocus
             />
             <div className="flex gap-3 mt-auto">
               <button onClick={() => { setCustomExerciseMode(false); setCustomExerciseName('') }} className="monument-button flex-1" style={{ height: 48, background: 'rgba(255,252,248,0.95)', borderRadius: '12px', border: '2px solid #8B5A3E', color: '#6B4423', fontSize: '12px', fontWeight: '700' }}>BACK</button>
               <button
-                onClick={() => { if (!customExerciseName.trim()) return; setSelectedExercise(customExerciseName.trim()); closeExerciseModal() }}
+                onClick={startCustomExercise}
                 className="monument-button flex-1"
                 style={{ height: 48, background: customExerciseName.trim() ? 'linear-gradient(135deg,#FF9F66,#FFB88A)' : 'rgba(200,190,180,0.4)', borderRadius: '12px', border: `2px solid ${customExerciseName.trim() ? '#8B5A3E' : 'rgba(139,90,62,0.2)'}`, color: customExerciseName.trim() ? '#6B4423' : '#A0725A', fontSize: '12px', fontWeight: '700' }}
               >CONTINUE</button>
@@ -408,13 +444,13 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
             </button>
             <div className="flex items-center gap-3 flex-shrink-0">
               <div style={{ flex: 1, height: 1, background: 'rgba(139,90,62,0.2)' }} />
-              <span className="monument-text" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', letterSpacing: '1px' }}>OR SELECT FROM LIST</span>
+              <span className="monument-text" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '1px' }}>OR SELECT FROM LIST</span>
               <div style={{ flex: 1, height: 1, background: 'rgba(139,90,62,0.2)' }} />
             </div>
             {ALL_CATS.map(cat => (
               <button key={cat.name} onClick={() => setSelectedWorkoutCategory(cat.name)} className="monument-button w-full flex items-center gap-3 px-4 py-3 flex-shrink-0" style={{ background: cat.gradient, borderRadius: '12px', border: `2px solid ${cat.border}`, boxShadow: `0 4px 0 ${cat.shadow}` }}>
                 <span className="monument-text" style={{ color: '#fff', fontSize: '12px', fontWeight: '700', textShadow: '0 1px 4px rgba(0,0,0,0.25)', flex: 1, textAlign: 'left' }}>{cat.name}</span>
-                <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: '9px', fontWeight: '700' }}>{cat.exercises.length > 0 ? `${cat.exercises.length} exercises ›` : '›'}</span>
+                <span style={{ color: 'rgba(255,255,255,0.92)', fontSize: '10px', fontWeight: '700', textShadow: '0 1px 2px rgba(0,0,0,0.25)' }}>{cat.exercises.length > 0 ? `${cat.exercises.length} exercises ›` : '›'}</span>
               </button>
             ))}
           </div>
@@ -428,9 +464,12 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
           const shadowColor = cat?.shadow ?? 'rgba(155,127,200,0.3)'
           const dotColor = cat?.color ?? '#9B7FC8'
 
-          const todaySet = new Set(todayWorkouts.map(w => w.exercise))
+          const norm = (e: string) => e.trim().toLowerCase()
+          const todaySet = new Set(todayWorkouts.map(w => norm(w.exercise)))
+          // Same category resolution as the history view (explicit pick, else the day's single planned category)
+          const todayDay = { plannedCategories: scheduledCategories } as DayLog
           const todayForCat = isRestDay ? [] : todayWorkouts
-            .filter(w => w.category === selectedWorkoutCategory)
+            .filter(w => categoryOf(w, todayDay) === selectedWorkoutCategory)
             .map(w => w.exercise)
             .filter((e, i, arr) => arr.indexOf(e) === i)
 
@@ -439,11 +478,11 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
               .flatMap(d => d.workouts
                 .filter(w => w.category === selectedWorkoutCategory)
                 .map(w => w.exercise))
-              .filter(e => !todaySet.has(e)),
-          ].filter((e, i, arr) => arr.indexOf(e) === i)
+              .filter(e => !todaySet.has(norm(e))),
+          ].filter((e, i, arr) => arr.findIndex(x => norm(x) === norm(e)) === i)
 
-          const doneNames = new Set([...todayForCat, ...histForCat])
-          const remaining = cat ? cat.exercises.filter(e => !doneNames.has(e)) : []
+          const doneNames = new Set([...todayForCat, ...histForCat].map(norm))
+          const remaining = cat ? cat.exercises.filter(e => !doneNames.has(norm(e))) : []
 
           return (
             <div className="flex flex-col gap-2 overflow-y-auto flex-1">
@@ -461,7 +500,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
               )}
               {histForCat.length > 0 && (
                 <>
-                  <div className="monument-text px-1 pb-0.5 flex-shrink-0" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px', marginTop: todayForCat.length > 0 ? 4 : 0 }}>YOUR PREVIOUS WORKOUTS</div>
+                  <div className="monument-text px-1 pb-0.5 flex-shrink-0" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px', marginTop: todayForCat.length > 0 ? 4 : 0 }}>YOUR PREVIOUS WORKOUTS</div>
                   {histForCat.map(exercise => (
                     <button key={exercise} onClick={() => pickExercise(exercise, selectedWorkoutCategory)} className="monument-button w-full flex items-center gap-3 px-4 py-3 flex-shrink-0" style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '10px', border: `1.5px solid ${borderColor}`, boxShadow: `0 2px 0 ${shadowColor}` }}>
                       <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: dotColor }} />
@@ -473,7 +512,7 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
               )}
               {remaining.length > 0 && (
                 <>
-                  {(todayForCat.length > 0 || histForCat.length > 0) && <div className="monument-text px-1 pb-0.5 flex-shrink-0" style={{ color: '#A0725A', fontSize: '9px', fontWeight: '700', letterSpacing: '0.5px', marginTop: 4 }}>SUGGESTIONS</div>}
+                  {(todayForCat.length > 0 || histForCat.length > 0) && <div className="monument-text px-1 pb-0.5 flex-shrink-0" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700', letterSpacing: '0.5px', marginTop: 4 }}>SUGGESTIONS</div>}
                   {remaining.map(exercise => (
                     <button key={exercise} onClick={() => pickExercise(exercise, selectedWorkoutCategory)} className="monument-button w-full flex items-center gap-3 px-4 py-3 flex-shrink-0" style={{ background: 'rgba(255,252,248,0.95)', borderRadius: '10px', border: '1.5px solid rgba(139,90,62,0.2)', boxShadow: '0 2px 0 rgba(139,90,62,0.1)' }}>
                       <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: 'rgba(139,90,62,0.3)' }} />
@@ -490,8 +529,8 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
                   </div>
                   <div className="monument-text text-center" style={{ color: '#6B4423', fontSize: '13px', fontWeight: '700' }}>Rest & Recovery</div>
                   <div className="monument-text text-center px-4" style={{ color: '#A0725A', fontSize: '10px', fontWeight: '700', lineHeight: 1.6 }}>Rest days are when your body actually gets stronger.</div>
-                  <button onClick={() => { logRestDay(); closeExerciseModal() }} className="monument-button px-6 py-3" style={{ background: 'linear-gradient(135deg,#9B7FC8,#B89FDE)', borderRadius: '12px', border: '2px solid #7A5FA8', color: '#fff', fontSize: '11px', fontWeight: '700', boxShadow: '0 4px 0 rgba(155,127,200,0.3)' }}>
-                    LOG REST DAY
+                  <button onClick={() => { logRestDay(); closeExerciseModal() }} disabled={restDayLogged} className="monument-button px-6 py-3" style={{ background: 'linear-gradient(135deg,#7A5FA8,#9B7FC8)', borderRadius: '12px', border: '2px solid #6A4F98', color: '#fff', fontSize: '11px', fontWeight: '700', boxShadow: '0 4px 0 rgba(155,127,200,0.3)', opacity: restDayLogged ? 0.5 : 1 }}>
+                    {restDayLogged ? '✓ REST DAY LOGGED' : 'LOG REST DAY'}
                   </button>
                 </div>
               )}
@@ -507,16 +546,16 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
 
   // ─────────────── EXERCISE LOGGING MODAL ───────────────
   const loggingModal = selectedExercise && (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(107, 68, 35, 0.7)', backdropFilter: 'blur(8px)' }} onClick={() => setSelectedExercise(null)}>
-      <div className="monument-card p-6 max-w-md w-full" onClick={e => e.stopPropagation()}>
-        <div className="flex justify-between items-center mb-4">
-          <div className="monument-text" style={{ color: '#6B4423', fontSize: '13px', fontWeight: '700' }}>{selectedExercise}</div>
-          <button onClick={() => setSelectedExercise(null)} className="monument-button" style={{ ...BTN_BASE, color: '#6B4423', fontSize: '18px', fontWeight: '700', lineHeight: '1', width: '32px', height: '32px' }}>×</button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(107, 68, 35, 0.7)', backdropFilter: 'blur(8px)' }} onClick={closeLoggingModal}>
+      <div className="monument-card p-6 max-w-md w-full max-h-[90dvh] overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="wm-log-title" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center gap-2 mb-4">
+          <div id="wm-log-title" className="monument-text flex-1 min-w-0" style={{ color: '#6B4423', fontSize: '13px', fontWeight: '700', overflowWrap: 'anywhere' }}>{selectedExercise}</div>
+          <button onClick={closeLoggingModal} aria-label="Close" className="monument-button flex-shrink-0" style={{ ...BTN_BASE, color: '#6B4423', fontSize: '18px', fontWeight: '700', lineHeight: '1', width: '40px', height: '40px' }}>×</button>
         </div>
 
-        <div className="flex gap-2 mb-4">
+        <div className="flex gap-2 mb-4" role="group" aria-label="Tracking mode">
           {(['energy', 'weights'] as const).map(mode => (
-            <button key={mode} onClick={() => setTrackingMode(mode)} className="monument-button flex-1 py-2"
+            <button key={mode} onClick={() => setTrackingMode(mode)} aria-pressed={trackingMode === mode} className="monument-button flex-1 py-2"
               style={{ background: trackingMode === mode ? 'linear-gradient(135deg,#FF9F66,#FFB88A)' : 'rgba(255,252,248,0.95)', borderRadius: '10px', border: '2px solid #8B5A3E', color: trackingMode === mode ? '#6B4423' : '#8B5A3E', fontSize: '10px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }}>
               {mode === 'energy' ? 'ENERGY ONLY' : 'WEIGHTS'}
             </button>
@@ -526,9 +565,9 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
         {trackingMode === 'energy' ? (
           <div className="mb-4">
             <div className="monument-text mb-3 text-center" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>How did you feel? (1-5)</div>
-            <div className="flex justify-center gap-2">
+            <div className="flex justify-center gap-2" role="group" aria-label="How did you feel">
               {[1,2,3,4,5].map(r => (
-                <button key={r} onClick={() => setEnergyRating(r)} className="monument-button w-12 h-12"
+                <button key={r} onClick={() => setEnergyRating(r)} aria-pressed={energyRating === r} className="monument-button w-12 h-12"
                   style={{ background: energyRating === r ? 'linear-gradient(135deg,#FF9F66,#FFB88A)' : 'rgba(255,252,248,0.95)', borderRadius: '10px', border: '2px solid #8B5A3E', color: energyRating === r ? '#6B4423' : '#8B5A3E', fontSize: '14px', fontWeight: '700', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }}>
                   {r}
                 </button>
@@ -536,28 +575,40 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
             </div>
           </div>
         ) : (
-          <div className="mb-4 max-h-48 overflow-y-auto">
+          <div className="mb-4 max-h-56 overflow-y-auto">
+            <div className="flex items-center justify-end gap-2 mb-2">
+              <span className="monument-text" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>UNIT</span>
+              <button onClick={() => setUnit(toggleKgLbs(unit))} aria-label={`Weight unit: ${unitLabel(unit)}. Tap to switch`} className="monument-button px-3"
+                style={{ minHeight: 36, background: 'rgba(255,252,248,0.95)', borderRadius: '8px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '11px', fontWeight: '700' }}>
+                {unitLabel(unit)}
+              </button>
+            </div>
             {sets.map((set, i) => (
-              <div key={i} className="grid gap-2 mb-2" style={{ gridTemplateColumns: '1fr 1fr' }}>
+              <div key={i} className="grid gap-2 mb-2 items-end" style={{ gridTemplateColumns: '1fr 1fr 40px' }}>
                 <div>
-                  <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>SET {i + 1} — REPS</label>
-                  <input type="number" inputMode="numeric" min={0} value={set.reps || ''} placeholder="0"
-                    onChange={e => updateSet(i, 'reps', Math.max(0, parseInt(e.target.value) || 0))}
+                  <label htmlFor={`wm-reps-${i}`} className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>SET {i + 1} — REPS</label>
+                  <input id={`wm-reps-${i}`} type="number" inputMode="numeric" min={0} max={999} value={set.reps || ''} placeholder="0"
+                    onChange={e => { const n = Number(e.target.value); updateSet(i, 'reps', Number.isFinite(n) ? Math.min(999, Math.max(0, Math.floor(n))) : 0) }}
                     onFocus={e => e.target.select()}
                     className="w-full monument-text"
-                    style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '14px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }} />
+                    style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '16px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }} />
                 </div>
                 <div>
-                  <label className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '9px', fontWeight: '700' }}>WEIGHT (KG)</label>
-                  <input type="number" inputMode="decimal" min={0} value={set.weight || ''} placeholder="0"
-                    onChange={e => updateSet(i, 'weight', Math.max(0, parseFloat(e.target.value) || 0))}
+                  <label htmlFor={`wm-weight-${i}`} className="monument-text block mb-1" style={{ color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>WEIGHT ({unitLabel(unit)})</label>
+                  <input id={`wm-weight-${i}`} type="number" inputMode="decimal" min={0} max={1000} value={set.weight || ''} placeholder="0"
+                    onChange={e => { const n = Number(e.target.value); updateSet(i, 'weight', Number.isFinite(n) ? Math.round(Math.min(1000, Math.max(0, n)) * 10) / 10 : 0) }}
                     onFocus={e => e.target.select()}
                     className="w-full monument-text"
-                    style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '14px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }} />
+                    style={{ height: 40, background: 'rgba(255,252,248,0.95)', border: '2px solid #8B5A3E', borderRadius: '8px', color: '#6B4423', fontSize: '16px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.25)' }} />
                 </div>
+                <button onClick={() => removeSet(i)} disabled={sets.length <= 1} aria-label={`Remove set ${i + 1}`}
+                  className="flex items-center justify-center"
+                  style={{ width: 40, height: 40, background: 'none', border: 'none', cursor: 'pointer', visibility: sets.length > 1 ? 'visible' : 'hidden' }}>
+                  <X aria-hidden="true" size={14} strokeWidth={2.5} color="#A0725A" />
+                </button>
               </div>
             ))}
-            <button onClick={addSet} className="monument-button w-full mt-1" style={{ height: 36, background: 'rgba(255,252,248,0.95)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>
+            <button onClick={addSet} className="monument-button w-full mt-1" style={{ height: 40, background: 'rgba(255,252,248,0.95)', borderRadius: '10px', border: '2px solid #8B5A3E', color: '#8B5A3E', fontSize: '10px', fontWeight: '700' }}>
               + ADD SET
             </button>
           </div>
@@ -565,8 +616,9 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
 
         <button
           onClick={() => logWorkout(activeLogCategory)}
+          disabled={trackingMode === 'weights' && !sets.some(s => s.reps > 0)}
           className="monument-button w-full py-3.5"
-          style={{ ...BTN_BASE, color: '#6B4423', fontSize: '12px', fontWeight: '700', letterSpacing: '0.5px' }}
+          style={{ ...BTN_BASE, color: '#6B4423', fontSize: '12px', fontWeight: '700', letterSpacing: '0.5px', opacity: trackingMode === 'weights' && !sets.some(s => s.reps > 0) ? 0.5 : 1 }}
         >
           LOG WORKOUT
         </button>
@@ -579,7 +631,14 @@ export function WorkoutMode({ currentView }: { currentView: 'today' | 'previous'
       {currentView === 'today' ? todayView : previousView}
       {exerciseModal}
       {loggingModal}
-      <WorkoutMediaFAB logWorkoutDirect={logWorkoutDirect} />
+      {saveError && (
+        <div role="alert" onClick={clearSaveError}
+          className="fixed z-[60] left-1/2 monument-text px-4 py-2.5"
+          style={{ top: 72, transform: 'translateX(-50%)', width: 'min(calc(100vw - 32px), 400px)', background: 'rgba(255,252,248,0.98)', border: '2px solid #C04040', borderRadius: '12px', color: '#8B3A2E', fontSize: '11px', fontWeight: '700', textAlign: 'center', boxShadow: '0 4px 0 rgba(139,90,62,0.2)' }}>
+          {saveError}
+        </div>
+      )}
+      <WorkoutMediaFAB logWorkoutDirect={logWorkoutDirect} logWorkoutBatch={logWorkoutBatch} />
     </div>
   )
 }
